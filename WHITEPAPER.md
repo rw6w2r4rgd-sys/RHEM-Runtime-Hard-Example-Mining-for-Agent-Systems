@@ -87,7 +87,7 @@ LLM 用 RLHF 从人类反馈里进化；**这套机制让 Agent 体系从自己�
 ```bibtex
 @misc{rhem2026,
   title={Runtime Hard-Example Mining for Agent Systems (RHEM)},
-  author={XUYINGSHENG},
+  author={徐应生},
   year={2026},
   howpublished={GitHub repository},
   note={First release: 2026-09-10}
