@@ -108,3 +108,9 @@ outcome = engine.ingest(Incident(
 ## License
 
 MIT；本目录为方法论的开源参考实现。
+
+## 验证与反驳
+
+欢迎通过 [Issues](https://github.com/rw6w2r4rgd-sys/RHEM-Runtime-Hard-Example-Mining-for-Agent-Systems/issues)
+提交验证结果、复现用例或更早的同形出处。对 RHEM 的质疑不需要“礼貌确认”，
+只要能给出可复现证据，就是这篇方法论文档需要的活证。
