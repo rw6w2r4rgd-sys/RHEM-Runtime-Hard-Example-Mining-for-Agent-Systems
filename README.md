@@ -44,6 +44,14 @@ RHEM 不否认训练界难例挖掘的先行价值。它是在既有“难样本
 
 更具体的先后关系与定位，见 [先驱与绘图师定位说明](docs/PIONEER-AND-CARTOGRAPHER.md)。
 
+## 为什么前期优先使用 RHEM
+
+在运营前期，团队往往还没有足够的训练样本、评估集和训练发布闭环，但已经拥有真实错误、领域判断和现场修正信号。RHEM 先把这些已知痛点转成运行期可加载的别名、规则、流程配置或词条，让可扩展 Agent 先在真实运营中适配。
+
+它主要解决“同类错误不再复发”；难例发掘则利用积累起来的难例提升模型泛化能力。两者互补：RHEM 管当下，难例发掘管未来。
+
+详细边界、适用条件和两条路线的分工见 [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)。
+
 ## RHEM 处理什么
 
 参考实现把运行期难例分成四类，每一类走不同出口。
@@ -353,6 +361,7 @@ after = engine.rescan()
 
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
+- [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
 
 ## 引用
 
