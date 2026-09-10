@@ -1,6 +1,11 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
-# RHEM 参考实现
+本仓库包含方法论文档、定位说明与 MIT 参考实现。
+
+## 文档
+
+- [白皮书：RHEM 方法、四类难例与局限](WHITEPAPER.md)
+- [先驱与绘图师：RHEM 与难例发掘的先后定位](docs/PIONEER-AND-CARTOGRAPHER.md)
 
 本目录把《RHEM — Runtime Hard-Example Mining for Agent Systems》方法论文档
 实现为一套可离线运行的 Python 参考实现。它演示的不是“大模型重训”，而是
