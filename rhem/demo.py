@@ -39,11 +39,19 @@ def _print_outcome(step: str, outcome: Dict[str, Any]) -> None:
     note = outcome.get("message", "")
     print(f"    [{step}] 第 {outcome.get('occurrences')} 次 | {status}")
     print(f"      {note}")
+    if outcome.get("cluster_key"):
+        print(f"      图簇: {outcome['cluster_key']}")
+    finding = outcome.get("graph_finding")
+    if finding:
+        print(
+            f"      根因候选: {finding['root_candidate']} | "
+            f"路径: {' -> '.join(finding['cause_path'])}"
+        )
+        print(f"      影响范围: {finding['scope_node_ids']}")
     if outcome.get("patch_id"):
         print(f"      补丁: {outcome['patch_id']}")
     if outcome.get("proposal_id"):
         print(f"      药方: {outcome['proposal_id']}")
-
 
 def main() -> None:
     root = Path(tempfile.mkdtemp(prefix="rhem_demo_"))
@@ -54,7 +62,7 @@ def main() -> None:
     print("RHEM 参考实现演示：错一次，教会一类；免重训，当场生效")
     print("=" * 74)
     print(f"持久化目录: {store.root}")
-    print(f"门控: 同族 {engine.gate.min_occurrences} 次后进入并库判断")
+    print(f"门控: 同一图簇或同族 {engine.gate.min_occurrences} 个独立证据后进入并库判断")
     print()
 
     # ---------- 1. 识别错误 → 别名库 ----------
@@ -85,26 +93,71 @@ def main() -> None:
         print(f"    -> 别名库已生效: {canonical} <= {rule['aliases']} (patch={rule['patch_id']})")
     print()
 
-    # ---------- 2. 流程错误 → 结构性修复 ----------
-    print("--- 2) 流程错误：HTTP 拉单反复重试导致死锁式卡死 ---")
-    family = "process:retry:fetch_orders"
-    for idx, source in enumerate(["queue-a", "queue-b", "queue-c"], start=1):
+    # ---------- 2. 图探针：BFS 圈定范围，DFS 追踪根因 ----------
+    print("--- 2) 图探针：多个症状共享一个上游根因 ---")
+    root_key = "root:fetch_orders:shared_lock"
+    graph_cases = [
+        ("session-1", "symptom-a"),
+        ("session-1", "symptom-b"),
+        ("session-1", "symptom-c"),
+        ("session-2", "symptom-d"),
+        ("session-3", "symptom-e"),
+    ]
+    for idx, (session_id, symptom_id) in enumerate(graph_cases, start=1):
+        graph = {
+            "session_id": session_id,
+            "cluster_key": root_key,
+            "start_node": symptom_id,
+            "nodes": [
+                {"id": symptom_id, "kind": "error"},
+                {
+                    "id": root_key,
+                    "kind": "root_cause",
+                    "ref_id": root_key,
+                },
+                {
+                    "id": "tool:fetch_orders",
+                    "kind": "tool",
+                    "ref_id": "fetch_orders",
+                },
+            ],
+            "edges": [
+                {
+                    "source": symptom_id,
+                    "target": root_key,
+                    "relation": "caused_by",
+                    "confidence": 0.96,
+                },
+                {
+                    "source": root_key,
+                    "target": "tool:fetch_orders",
+                    "relation": "runs_on",
+                    "confidence": 0.9,
+                },
+            ],
+        }
         outcome = _feed(
             engine,
             ErrorCategory.PROCESS,
-            family,
-            f"task:{source}",
-            f"{source} 在 fetch_orders 上进入无限重试，直到超时。",
+            f"process:graph:{symptom_id}",
+            f"task:{session_id}:{symptom_id}",
+            f"{symptom_id} 在 {session_id} 中出现无限重试。",
             {
                 "tool": "fetch_orders",
                 "fix": {"max_retries": 2, "deadlock_detection_s": 3.0},
+                "graph": graph,
             },
         )
-        _print_outcome(f"流程 #{idx}", outcome)
-    settings = store.view()["process_settings"]
-    print(f"    -> 结构性修复已生效(不入库): {settings}")
+        _print_outcome(f"图探针 #{idx}", outcome)
+    graph_cluster = store.get_cluster(root_key)
+    print(
+        "    -> 门控按图簇去重："
+        f"独立证据={graph_cluster['occurrences']} "
+        f"症状={graph_cluster['symptom_count']} "
+        f"状态={graph_cluster['status']}"
+    )
+    print(f"    -> 结构性修复已生效(不入库): {store.view()['process_settings']}")
     print()
-
     # ---------- 3. 规则缺失 → 药方 + 人批准 ----------
     print("--- 3) 规则缺失：收件人字段缺失时系统仍自动猜测 ---")
     family = "rule:missing_recipient_confirmation"

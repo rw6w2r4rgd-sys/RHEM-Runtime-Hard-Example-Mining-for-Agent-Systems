@@ -12,7 +12,7 @@ RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
 - 这里公开的是方法论、定位说明和 MIT 参考实现；
 - 不包含生产环境的防篡改、私有探针、内部部署脚本；
 - 当前没有 benchmark、线上 A/B 或生产性能数据，因此不声称加速倍数、准确率提升或行业领先；
-- 目前能证明的是：四类难例链路、门控、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
+- 目前能证明的是：四类难例链路、BFS/DFS 图探针、门控、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
 
 ## 为什么需要 RHEM
 
@@ -125,19 +125,40 @@ RHEM 不替人猜标准答案，只上报：
 
 之后才写入词条库。
 
+## 双阶段图探针
+
+当现场能提供错误图时，RHEM 在门控前先做两轮确定性遍历：
+
+| 阶段 | 作用 | 不做什么 |
+|---|---|---|
+| BFS | 从错误出发，在有限深度内圈定影响范围和相关问题簇 | 不证明范围内节点都是根因 |
+| DFS | 沿 `caused_by` / `depends_on` 追踪上游根因候选 | 不替代人工因果判断 |
+
+两者共同生成 `cluster_key`。同一根因、同一会话里的多个症状只算一个独立证据；不同会话仍可分别累计。这样可以把“同根因的多个症状”和“真正来自不同现场的独立证据”区分开。
+
+遇到上游循环、深度截断或低置信度边时，图分析返回 `needs_human_graph`，识别错误和流程错误也不会自动应用补丁。完整输入格式、去重规则与边界见 [双阶段图探针](docs/GRAPH-PROBE.md)。
+
 ## 运行机制
 
 ```text
 现场错误或用户纠错
         |
         v
-   Incident + 来源 + 证据
+ Incident + 来源 + 证据 + 可选错误图
         |
         v
-     待学习区
+ 前置图探针（有图时）
+   BFS：有限范围
+   DFS：上游根因候选
         |
         v
- 同一 family 累计计数与来源检查
+ 生成 cluster_key；无图时退回 family
+        |
+        v
+ 待学习区
+        |
+        v
+ 图簇优先、family 兜底的独立证据检查
         |
         +---- 未达门控 ----------> 继续等待，不改库
         |
@@ -163,10 +184,12 @@ RHEM 不替人猜标准答案，只上报：
 
 当前参考实现的门控是：
 
-- 同一 `family` 默认累计 `3` 次；
-- 可选要求来源数达到下限；
-- 计数和来源都保存在 `hard_examples`；
-- 达到门控前，只记录、不修改知识或流程配置。
+- 有图时优先按 `cluster_key` 统计独立证据，无图时退回同一 `family`；
+- 同一根因、同一会话的多个症状只算一个证据，不同会话可分别累计；
+- 默认累计 `3` 个独立证据，并可选要求来源数达到下限；
+- 计数和来源分别保存在 `clusters` 与 `hard_examples`；
+- 达到门控前，只记录、不修改知识或流程配置；
+- 图结构不明确时，不自动应用识别或流程补丁，转人工复核。
 
 这是可运行的行为基线，不是自适应概率模型。README 不会把“计数门控”夸成“已验证的统计学习”。
 
@@ -221,7 +244,7 @@ py -X utf8 -m unittest discover -s tests -p "test_*.py" -v
 当前 demo 会依次演示：
 
 1. 识别错误在第三次同族反馈后自动进入别名库；
-2. 流程错误形成结构性配置补丁，不写业务知识；
+2. BFS 圈定错误影响范围，DFS 找到共享根因候选，图簇门控只生成一个流程补丁；
 3. 规则缺失先生成药方，人工批准后才写规则库；
 4. 知识缺口先上报，人工归因后才写词条库；
 5. 护栏域拒绝带保护目标的运行期补丁；
@@ -235,10 +258,11 @@ demo 使用合成数据，例如 `order-104`、`ZL-9`，不包含真实订单、
 rhem/
   __init__.py   公开入口
   models.py     Incident、ErrorCategory、HardExampleGroup 与异常
-  store.py      JSON 记忆库、护栏域、补丁、回滚、审计日志
-  engine.py     门控、四类出口、人工批准、默认复扫
-  demo.py       四类难例的离线演示
-  tests/        当前 9 个单元测试
+  graph.py      BFS/DFS 图探针、根因候选、图簇发现
+  store.py      JSON 记忆库、图簇、护栏域、补丁、回滚、审计日志
+  engine.py     图探针接入、门控、四类出口、人工批准、默认复扫
+  demo.py       四类难例与图探针的离线演示
+tests/          单元测试
 ```
 
 ## 接入示例
@@ -265,6 +289,39 @@ outcome = engine.ingest(Incident(
 ```
 
 前两次通常返回 `waiting`。第三次达到默认门控后，返回 `auto_applied`，并创建别名补丁。
+
+### BFS/DFS 图探针
+
+把图放在 `Incident.evidence["graph"]`。下面的例子表示多个症状指向同一个上游锁冲突：
+
+```python
+outcome = engine.ingest(Incident(
+    category=ErrorCategory.PROCESS,
+    family="process:retry:fetch_orders:symptom-a",
+    message="fetch_orders 在 session-1 中反复重试",
+    source="task:session-1",
+    evidence={
+        "fix": {"max_retries": 2, "deadlock_detection_s": 3.0},
+        "graph": {
+            "session_id": "session-1",
+            "cluster_key": "root:shared-lock",
+            "start_node": "symptom-a",
+            "nodes": [
+                {"id": "symptom-a", "kind": "error"},
+                {"id": "root:shared-lock", "kind": "root_cause"},
+            ],
+            "edges": [{
+                "source": "symptom-a",
+                "target": "root:shared-lock",
+                "relation": "caused_by",
+                "confidence": 0.96,
+            }],
+        },
+    },
+))
+```
+
+返回的 `graph_finding` 包含 `scope_node_ids`、`cause_path`、`root_candidate` 和风险标记；完整格式见 [双阶段图探针](docs/GRAPH-PROBE.md)。
 
 ### 规则药方与批准
 
@@ -322,6 +379,9 @@ after = engine.rescan()
 已经验证：
 
 - 四类难例各自可到达对应出口；
+- BFS 能限制影响范围，DFS 能沿上游关系找到根因候选；
+- 同会话同根因的多个症状只计一个独立证据，跨会话证据可累计；
+- 循环、深度截断和低置信度边会转人工；
 - 默认门控需要累计次数；
 - 可要求多个来源后才并库；
 - 规则缺失和知识缺口必须人工步骤；
@@ -345,6 +405,7 @@ after = engine.rescan()
 
 - [x] 带来源标记的待学习区
 - [x] 同族累计门控
+- [x] BFS/DFS 双阶段图探针与图簇门控
 - [x] 识别错误自动进入别名库
 - [x] 流程错误结构化修复
 - [x] 规则药方与人工批准
@@ -362,6 +423,7 @@ after = engine.rescan()
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
 - [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
+- [双阶段图探针](docs/GRAPH-PROBE.md)：BFS/DFS 语义、图格式、图簇门控、人工接管条件与局限
 
 ## 引用
 

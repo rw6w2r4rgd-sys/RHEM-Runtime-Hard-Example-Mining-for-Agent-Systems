@@ -7,6 +7,7 @@ import copy
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from .graph import GraphAnalyzer, GraphFinding
 from .models import (
     ErrorCategory,
     HardExampleGroup,
@@ -20,7 +21,7 @@ from .store import RhemStore
 
 @dataclass
 class GatePolicy:
-    """同一难例族需跨多次累计，达到阈值后才允许并库。"""
+    """同一图簇或难例族需跨多次累计，达到阈值后才允许并库。"""
 
     min_occurrences: int = 3
     min_sources: int = 1
@@ -37,32 +38,46 @@ class GatePolicy:
 class Decisioner:
     """把规则缺失/知识缺口写成药方；知识缺口不代答，只要求人归因。"""
 
-    def draft(self, incident: Incident) -> Dict[str, Any]:
+    def draft(
+        self,
+        incident: Incident,
+        graph_finding: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         evidence = incident.evidence or {}
+        graph_context = copy.deepcopy(graph_finding) if graph_finding else None
         if incident.category == ErrorCategory.RULE_GAP:
             proposed = evidence.get("proposed_rule")
             if isinstance(proposed, dict):
-                return {"rule": proposed}
-            return {
-                "rule": {
-                    "id": new_id("rule"),
-                    "name": evidence.get("rule_name") or "规则缺失补丁",
-                    "description": evidence.get("rule_reason")
-                    or f"为 {incident.family} 补一条可执行规则。",
-                    "condition": evidence.get("rule_condition") or f"family={incident.family}",
-                    "action": evidence.get("rule_action") or "命中时先请求人工确认，再继续执行",
-                    "family": incident.family,
-                    "sources": [incident.source],
-                    "enabled": True,
-                    "patch_id": None,
-                    "created_at": utc_now(),
-                }
+                rule = copy.deepcopy(proposed)
+                if graph_context:
+                    rule["graph_evidence"] = graph_context
+                return {"rule": rule}
+            rule = {
+                "id": new_id("rule"),
+                "name": evidence.get("rule_name") or "规则缺失补丁",
+                "description": evidence.get("rule_reason")
+                or f"为 {incident.family} 补一条可执行规则。",
+                "condition": evidence.get("rule_condition")
+                or f"family={incident.family}",
+                "action": evidence.get("rule_action")
+                or "命中时先请求人工确认，再继续执行",
+                "family": incident.family,
+                "sources": [incident.source],
+                "enabled": True,
+                "patch_id": None,
+                "created_at": utc_now(),
             }
+            if graph_context:
+                rule["graph_evidence"] = graph_context
+            return {"rule": rule}
         if incident.category == ErrorCategory.KNOWLEDGE_GAP:
-            return {
+            suggestion = {
                 "term": evidence.get("term") or incident.family,
                 "required_attribution": ["canonical", "definition", "kind"],
             }
+            if graph_context:
+                suggestion["graph_evidence"] = graph_context
+            return suggestion
         return {}
 
 
@@ -74,43 +89,108 @@ class LearningEngine:
         store: RhemStore,
         gate: Optional[GatePolicy] = None,
         decisioner: Optional[Decisioner] = None,
+        graph_analyzer: Optional[GraphAnalyzer] = None,
     ) -> None:
         self.store = store
         self.gate = gate or GatePolicy()
         self.decisioner = decisioner or Decisioner()
+        self.graph_analyzer = graph_analyzer or GraphAnalyzer()
 
     # ----------------------------------------------------------
     # 主入口：现场错误/用户纠错 → 待学习区 → 门控
     # ----------------------------------------------------------
     def ingest(self, incident: Incident) -> Dict[str, Any]:
-        group = self.store.record_incident(incident)
+        finding = self.graph_analyzer.analyze(incident)
+        graph_finding = finding.to_dict() if finding else None
+        cluster_key = None
+        evidence_key = None
+        if finding:
+            incident.cluster_key = finding.cluster_key
+            cluster_key = finding.cluster_key
+            evidence_key = self._graph_evidence_key(incident, finding)
+
+        group = self.store.record_incident(
+            incident,
+            evidence_key=evidence_key,
+            deduplicate_evidence=finding is not None,
+        )
+        cluster = self.store.get_cluster(cluster_key) if cluster_key else None
+        gate_record = cluster or group
+        occurrences = int(gate_record.get("occurrences", 0))
         outcome = {
             "incident_id": incident.id,
             "family": incident.family,
+            "cluster_key": cluster_key,
             "category": incident.category.value,
-            "occurrences": group["occurrences"],
+            "occurrences": occurrences,
+            "family_occurrences": group["occurrences"],
+            "symptom_count": (
+                cluster["symptom_count"] if cluster else group["occurrences"]
+            ),
+            "graph_finding": graph_finding,
             "event": "waiting",
-            "message": f"已进入待学习区；同族累计 {group['occurrences']} 次，尚未达到门控。",
+            "message": (
+                f"已进入待学习区；同族累计 {group['occurrences']} 次，"
+                "尚未达到门控。"
+            ),
             "patch_id": None,
             "proposal_id": None,
         }
-        if not self.gate.reached(group):
-            return outcome
-        if group["status"] != "pending":
-            outcome["event"] = "already_handled"
+        if finding:
+            root = finding.root_candidate or finding.cluster_key
             outcome["message"] = (
-                f"该族已处于 {group['status']} 状态，不再重复并库。"
+                f"已进入待学习图簇；根因候选 {root} 累计 {occurrences} "
+                f"个独立证据、{outcome['symptom_count']} 个症状，"
+                "尚未达到门控。"
+            )
+
+        if not self.gate.reached(gate_record):
+            return outcome
+        if gate_record["status"] != "pending":
+            outcome["event"] = "already_handled"
+            scope = "簇" if finding else "族"
+            outcome["message"] = (
+                f"该{scope}已处于 {gate_record['status']} 状态，不再重复并库。"
             )
             return outcome
+        if finding and finding.needs_human:
+            self.store.mark_cluster(finding.cluster_key, "needs_human")
+            reasons = []
+            if finding.cycle_detected:
+                reasons.append("上游路径存在循环")
+            if finding.truncated:
+                reasons.append("根因追踪达到深度上限")
+            if finding.low_confidence_edge:
+                reasons.append("观察到低置信度边")
+            outcome["event"] = "needs_human_graph"
+            outcome["message"] = (
+                "图探针达到门控，但无法给出单一路径："
+                + "；".join(reasons or ["图结构不明确"])
+                + "。已转人工复核。"
+            )
+            return outcome
+
         if incident.category == ErrorCategory.RECOGNITION:
-            return self._apply_recognition(incident, group, outcome)
+            return self._apply_recognition(incident, group, cluster, outcome)
         if incident.category == ErrorCategory.PROCESS:
-            return self._apply_process_fix(incident, group, outcome)
+            return self._apply_process_fix(incident, group, cluster, outcome)
         if incident.category == ErrorCategory.RULE_GAP:
-            return self._propose_rule(incident, group, outcome)
+            return self._propose_rule(incident, group, cluster, outcome)
         if incident.category == ErrorCategory.KNOWLEDGE_GAP:
-            return self._report_knowledge(incident, group, outcome)
+            return self._report_knowledge(incident, group, cluster, outcome)
         raise ValueError(f"unknown category: {incident.category}")
+
+    @staticmethod
+    def _graph_evidence_key(
+        incident: Incident,
+        finding: GraphFinding,
+    ) -> str:
+        if finding.needs_human or not finding.root_candidate:
+            root = finding.cluster_key or incident.family
+        else:
+            root = finding.root_candidate
+        session = finding.session_id or incident.source
+        return f"{root}@{session}"
 
     # ----------------------------------------------------------
     # 四类出口
@@ -119,6 +199,7 @@ class LearningEngine:
         self,
         incident: Incident,
         group: Dict[str, Any],
+        cluster: Optional[Dict[str, Any]],
         outcome: Dict[str, Any],
     ) -> Dict[str, Any]:
         evidence = incident.evidence or {}
@@ -130,16 +211,17 @@ class LearningEngine:
                 "已达门控，但证据缺少 alias/canonical，不能自动猜测修正值。"
             )
             return outcome
+        gate_record = cluster or group
         patch = self.store.commit(
             actions=[{
                 "op": "add_alias",
                 "canonical": canonical,
                 "aliases": [alias],
-                "sources": group["sources"],
+                "sources": list(gate_record["sources"]),
             }],
             summary=f"识别难例并库：{alias} -> {canonical}",
             actor="rhem:recognition",
-            incident_ids=group["incident_ids"],
+            incident_ids=list(gate_record["incident_ids"]),
         )
         self.store.mark_group(
             incident.family,
@@ -147,9 +229,19 @@ class LearningEngine:
             patch_id=patch["id"],
             proposal_id=group.get("proposal_id"),
         )
+        if cluster:
+            self.store.mark_cluster(
+                cluster["cluster_key"],
+                "applied",
+                patch_id=patch["id"],
+                proposal_id=cluster.get("proposal_id"),
+            )
         outcome.update({
             "event": "auto_applied",
-            "message": f"门控通过；别名 {alias} -> {canonical} 已自动并库并即时生效。",
+            "message": (
+                f"门控通过；别名 {alias} -> {canonical} "
+                "已自动并库并即时生效。"
+            ),
             "patch_id": patch["id"],
         })
         return outcome
@@ -158,6 +250,7 @@ class LearningEngine:
         self,
         incident: Incident,
         group: Dict[str, Any],
+        cluster: Optional[Dict[str, Any]],
         outcome: Dict[str, Any],
     ) -> Dict[str, Any]:
         evidence = incident.evidence or {}
@@ -166,6 +259,7 @@ class LearningEngine:
             outcome["event"] = "needs_structural_fix"
             outcome["message"] = "已达门控，但证据缺少可执行的 fix 配置。"
             return outcome
+        gate_record = cluster or group
         patch = self.store.commit(
             actions=[{
                 "op": "set_process_settings",
@@ -173,16 +267,27 @@ class LearningEngine:
             }],
             summary=f"流程难例结构性修复：{incident.family}",
             actor="rhem:process",
-            incident_ids=group["incident_ids"],
+            incident_ids=list(gate_record["incident_ids"]),
         )
         self.store.mark_group(
             incident.family,
             "applied",
             patch_id=patch["id"],
+            proposal_id=group.get("proposal_id"),
         )
+        if cluster:
+            self.store.mark_cluster(
+                cluster["cluster_key"],
+                "applied",
+                patch_id=patch["id"],
+                proposal_id=cluster.get("proposal_id"),
+            )
         outcome.update({
             "event": "structural_fix_applied",
-            "message": f"门控通过；流程配置已结构性修复，不入知识库。补丁：{patch['id']}",
+            "message": (
+                "门控通过；流程配置已结构性修复，不入知识库。"
+                f"补丁：{patch['id']}"
+            ),
             "patch_id": patch["id"],
         })
         return outcome
@@ -191,23 +296,29 @@ class LearningEngine:
         self,
         incident: Incident,
         group: Dict[str, Any],
+        cluster: Optional[Dict[str, Any]],
         outcome: Dict[str, Any],
     ) -> Dict[str, Any]:
-        suggestion = self.decisioner.draft(incident)
+        suggestion = self.decisioner.draft(
+            incident,
+            outcome.get("graph_finding"),
+        )
         rule = suggestion.get("rule") or {}
         rule.setdefault("id", new_id("rule"))
         rule.setdefault("name", "规则缺失补丁")
         rule.setdefault("family", incident.family)
+        gate_record = cluster or group
         rule["family"] = incident.family
         rule["enabled"] = True
-        rule["sources"] = list(dict.fromkeys(group["sources"]))
+        rule["sources"] = list(dict.fromkeys(gate_record["sources"]))
         rule["created_at"] = utc_now()
         proposal = self.store.create_proposal(
             kind="rule_gap",
             family=incident.family,
+            cluster_key=cluster["cluster_key"] if cluster else None,
             title=rule.get("name", "规则缺失药方"),
             detail=rule.get("description", ""),
-            incident_ids=group["incident_ids"],
+            incident_ids=list(gate_record["incident_ids"]),
             suggested={"rule": rule},
         )
         outcome.update({
@@ -221,17 +332,23 @@ class LearningEngine:
         self,
         incident: Incident,
         group: Dict[str, Any],
+        cluster: Optional[Dict[str, Any]],
         outcome: Dict[str, Any],
     ) -> Dict[str, Any]:
-        suggestion = self.decisioner.draft(incident)
+        suggestion = self.decisioner.draft(
+            incident,
+            outcome.get("graph_finding"),
+        )
         term = suggestion.get("term") or incident.family
+        gate_record = cluster or group
         proposal = self.store.create_proposal(
             kind="knowledge_gap",
             family=incident.family,
+            cluster_key=cluster["cluster_key"] if cluster else None,
             title=f"知识缺口：{term}",
             detail="该词/品名多次未识别；需要人工归因后才能写入词条库。",
-            incident_ids=group["incident_ids"],
-            suggested={"term": term},
+            incident_ids=list(gate_record["incident_ids"]),
+            suggested=suggestion,
             required_attribution=["canonical", "definition", "kind"],
         )
         outcome.update({
@@ -299,6 +416,14 @@ class LearningEngine:
     def rollback(self, patch_id: str) -> Dict[str, Any]:
         patch = self.store.rollback(patch_id)
         view = self.store.view()
+        for cluster_key, cluster in view["clusters"].items():
+            if cluster.get("patch_id") == patch_id:
+                self.store.mark_cluster(
+                    cluster_key,
+                    "rolled_back",
+                    patch_id=patch_id,
+                    proposal_id=cluster.get("proposal_id"),
+                )
         for family, group in view["hard_examples"].items():
             if group.get("patch_id") == patch_id:
                 self.store.mark_group(

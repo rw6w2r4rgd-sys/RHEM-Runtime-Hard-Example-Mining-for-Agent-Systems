@@ -93,6 +93,7 @@ class RhemStore:
             "terms": {},
             "incidents": [],
             "hard_examples": {},
+            "clusters": {},
             "prescriptions": {},
             "patch_meta": {},
         }
@@ -109,6 +110,7 @@ class RhemStore:
             data.setdefault("terms", {})
             data.setdefault("incidents", [])
             data.setdefault("hard_examples", {})
+            data.setdefault("clusters", {})
             data.setdefault("prescriptions", {})
             data.setdefault("patch_meta", {})
             return data
@@ -178,43 +180,137 @@ class RhemStore:
     # ----------------------------------------------------------
     # 难例记录与门控
     # ----------------------------------------------------------
-    def record_incident(self, incident: Incident) -> Dict[str, Any]:
-        row = incident.to_dict()
-        self.state["incidents"].append(row)
-        group = self.state["hard_examples"].setdefault(
-            incident.family,
-            {
+    def record_incident(
+        self,
+        incident: Incident,
+        *,
+        evidence_key: Optional[str] = None,
+        deduplicate_evidence: bool = False,
+    ) -> Dict[str, Any]:
+        cluster_key = incident.cluster_key or incident.family
+        existing_group = self.state["hard_examples"].get(incident.family)
+        if (
+            existing_group
+            and existing_group.get("category") != incident.category.value
+        ):
+            raise ValueError(
+                "family already belongs to another category: "
+                f"{existing_group['category']}"
+            )
+        existing_cluster = self.state["clusters"].get(cluster_key)
+        if (
+            existing_cluster
+            and existing_cluster.get("category") != incident.category.value
+        ):
+            raise ValueError(
+                "cluster already belongs to another category: "
+                f"{existing_cluster['category']}"
+            )
+
+        self.state["incidents"].append(incident.to_dict())
+        group = existing_group
+        if group is None:
+            group = {
                 "family": incident.family,
                 "category": incident.category.value,
                 "occurrences": 0,
                 "sources": [],
                 "incident_ids": [],
+                "cluster_keys": [],
                 "first_seen": incident.occurred_at,
                 "last_seen": incident.occurred_at,
                 "status": "pending",
                 "patch_id": None,
                 "proposal_id": None,
-            },
-        )
-        if group.get("category") != incident.category.value:
-            raise ValueError(
-                f"family already belongs to another category: {group['category']}"
-            )
+            }
+            self.state["hard_examples"][incident.family] = group
         group["occurrences"] += 1
         group["last_seen"] = incident.occurred_at
+        group.setdefault("cluster_keys", [])
+        if cluster_key not in group["cluster_keys"]:
+            group["cluster_keys"].append(cluster_key)
         if incident.source not in group["sources"]:
             group["sources"].append(incident.source)
         if incident.id not in group["incident_ids"]:
             group["incident_ids"].append(incident.id)
+
+        cluster = existing_cluster
+        if cluster is None:
+            cluster = {
+                "cluster_key": cluster_key,
+                "category": incident.category.value,
+                "occurrences": 0,
+                "symptom_count": 0,
+                "sources": [],
+                "families": [],
+                "incident_ids": [],
+                "evidence_keys": [],
+                "first_seen": incident.occurred_at,
+                "last_seen": incident.occurred_at,
+                "status": "pending",
+                "patch_id": None,
+                "proposal_id": None,
+            }
+            self.state["clusters"][cluster_key] = cluster
+        cluster["symptom_count"] += 1
+        key = evidence_key or incident.id
+        should_count = (
+            not deduplicate_evidence or key not in cluster["evidence_keys"]
+        )
+        if should_count:
+            cluster["occurrences"] += 1
+            if key not in cluster["evidence_keys"]:
+                cluster["evidence_keys"].append(key)
+        cluster["last_seen"] = incident.occurred_at
+        if incident.source not in cluster["sources"]:
+            cluster["sources"].append(incident.source)
+        if incident.family not in cluster["families"]:
+            cluster["families"].append(incident.family)
+        if incident.id not in cluster["incident_ids"]:
+            cluster["incident_ids"].append(incident.id)
+
         self._save()
         self._log("incident_recorded", {
             "incident_id": incident.id,
             "family": incident.family,
+            "cluster_key": cluster_key,
             "category": incident.category.value,
             "source": incident.source,
             "occurrences": group["occurrences"],
+            "cluster_occurrences": cluster["occurrences"],
+            "cluster_symptom_count": cluster["symptom_count"],
         })
         return self.get_group(incident.family)  # type: ignore[return-value]
+
+    def get_cluster(self, cluster_key: str) -> Optional[Dict[str, Any]]:
+        data = self.state["clusters"].get(cluster_key)
+        return copy.deepcopy(data) if data else None
+
+    def mark_cluster(
+        self,
+        cluster_key: str,
+        status: str,
+        patch_id: Optional[str] = None,
+        proposal_id: Optional[str] = None,
+    ) -> None:
+        cluster = self.state["clusters"].get(cluster_key)
+        if not cluster:
+            raise NotFound(f"hard-example cluster not found: {cluster_key}")
+        cluster["status"] = status
+        if patch_id:
+            cluster["patch_id"] = patch_id
+        if proposal_id:
+            cluster["proposal_id"] = proposal_id
+        for family in cluster.get("families", []):
+            group = self.state["hard_examples"].get(family)
+            if not group:
+                continue
+            group["status"] = status
+            if patch_id:
+                group["patch_id"] = patch_id
+            if proposal_id:
+                group["proposal_id"] = proposal_id
+        self._save()
 
     def mark_group(
         self,
@@ -241,6 +337,7 @@ class RhemStore:
         *,
         kind: str,
         family: str,
+        cluster_key: Optional[str] = None,
         title: str,
         detail: str,
         incident_ids: Iterable[str],
@@ -253,6 +350,7 @@ class RhemStore:
             "id": proposal_id,
             "kind": kind,  # rule_gap | knowledge_gap
             "family": family,
+            "cluster_key": cluster_key,
             "title": title,
             "detail": detail,
             "status": "proposed",
@@ -267,6 +365,8 @@ class RhemStore:
         }
         self.state["prescriptions"][proposal_id] = proposal
         self.mark_group(family, "proposed", proposal_id=proposal_id)
+        if cluster_key:
+            self.mark_cluster(cluster_key, "proposed", proposal_id=proposal_id)
         self._save()
         self._log("proposal_created", {
             "proposal_id": proposal_id,
@@ -292,6 +392,8 @@ class RhemStore:
         proposal["resolved_at"] = utc_now()
         family = proposal["family"]
         self.mark_group(family, "rejected", proposal_id=proposal_id)
+        if proposal.get("cluster_key"):
+            self.mark_cluster(proposal["cluster_key"], "rejected", proposal_id=proposal_id)
         self._save()
         self._log("proposal_rejected", {
             "proposal_id": proposal_id,
@@ -329,6 +431,13 @@ class RhemStore:
             patch_id=patch["id"],
             proposal_id=proposal_id,
         )
+        if proposal.get("cluster_key"):
+            self.mark_cluster(
+                proposal["cluster_key"],
+                "applied",
+                patch_id=patch["id"],
+                proposal_id=proposal_id,
+            )
         self._save()
         self._log("proposal_applied", {
             "proposal_id": proposal_id,

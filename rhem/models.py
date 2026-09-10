@@ -63,6 +63,7 @@ class Incident:
     expected: Optional[str] = None
     actual: Optional[str] = None
     active: bool = True
+    cluster_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -76,6 +77,7 @@ class Incident:
             "expected": self.expected,
             "actual": self.actual,
             "active": self.active,
+            "cluster_key": self.cluster_key,
         }
 
     @classmethod
@@ -91,6 +93,7 @@ class Incident:
             expected=data.get("expected"),
             actual=data.get("actual"),
             active=bool(data.get("active", True)),
+            cluster_key=data.get("cluster_key"),
         )
 
 
