@@ -101,7 +101,7 @@ LLM 用 RLHF 从人类反馈里进化；**这套机制让 Agent 体系从自己�
   author={徐应生},
   year={2026},
   version={0.4.0},
-  doi={10.5281/zenodo.22681163},
+  doi={10.5281/zenodo.22719563},
   howpublished={GitHub repository},
   note={First release: 2026-09-10}
 }

@@ -33,5 +33,5 @@
       "resource_type": "software"
     }
   ],
-  "notes": "Prepared metadata for RHEM v0.4.0. The Zenodo concept DOI is 10.5281/zenodo.22681163; the v0.4.0 version DOI is assigned by the corresponding GitHub release."
+  "notes": "RHEM v0.4.0 was archived by Zenodo as 10.5281/zenodo.22719563; 10.5281/zenodo.22681163 is the concept DOI for the project."
 }
