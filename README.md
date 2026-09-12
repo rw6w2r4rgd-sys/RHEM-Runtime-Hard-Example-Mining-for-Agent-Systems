@@ -1,7 +1,7 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](CHANGELOG.md)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22719697.svg)](https://doi.org/10.5281/zenodo.22719697)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](CHANGELOG.md)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22681163.svg)](https://doi.org/10.5281/zenodo.22681163)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
@@ -485,6 +485,7 @@ after = engine.rescan()
 - [x] 可选难例蒸馏 `v0.3.0`
 - [x] 可选蒸馏反哺 `v0.4.0`
 - [x] 白皮书完整版 `v0.5.0`
+- [x] 归档元数据修正 `v0.5.1`
 - [x] BFS/DFS 双阶段图探针与图簇门控
 - [x] 识别错误自动进入别名库
 - [x] 流程错误结构化修复
@@ -500,12 +501,12 @@ after = engine.rescan()
 
 ## 版本
 
-当前参考实现版本为 `v0.5.0`，日期 `2026-09-12`。本版补充 Agent 级难例挖掘白皮书，明确运行期记忆更新与模型重训的边界，并整理四类难例、进化闭环、已知局限和可验证首发口径；运行行为没有变化。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前参考实现版本为 `v0.5.1`，日期 `2026-09-12`。本版修正 `v0.5.0` 发布时未同步版本元数据的问题，使归档内部版本、白皮书版本和 Zenodo 记录保持一致；运行行为没有变化。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 文档
 
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
-- [版本变更](CHANGELOG.md)：`v0.5.0`、`v0.4.0`、`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
+- [版本变更](CHANGELOG.md)：`v0.5.1`、`v0.5.0`、`v0.4.0`、`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
 - [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
 - [双阶段图探针](docs/GRAPH-PROBE.md)：BFS/DFS 语义、图格式、图簇门控、人工接管条件与局限
@@ -522,7 +523,14 @@ after = engine.rescan()
 Zenodo. https://doi.org/10.5281/zenodo.22681163
 ```
 
-`v0.5.0` 的版本 DOI，固定对应白皮书完整版：
+`v0.5.1` 的版本 DOI 将在 Zenodo 完成该 Release 的归档后生成。在此之前，引用当前版本时使用概念 DOI：
+
+```text
+徐应生. (2026). RHEM — Runtime Hard-Example Mining for Agent Systems.
+Zenodo. https://doi.org/10.5281/zenodo.22681163
+```
+
+`v0.5.0` 的版本 DOI，固定对应白皮书完整版的首次归档：
 
 ```text
 徐应生. (2026). RHEM — Runtime Hard-Example Mining for Agent Systems (v0.5.0).
@@ -543,7 +551,7 @@ Zenodo. https://doi.org/10.5281/zenodo.22719563
 Zenodo. https://doi.org/10.5281/zenodo.22719509
 ```
 
-引用 `v0.5.0` 时使用 `10.5281/zenodo.22719697`；引用 `v0.4.0` 时使用 `10.5281/zenodo.22719563`；引用 `v0.3.0` 时使用 `10.5281/zenodo.22719509`；引用项目所有版本时使用概念 DOI `10.5281/zenodo.22681163`。
+引用 `v0.5.0` 时使用 `10.5281/zenodo.22719697`；引用 `v0.4.0` 时使用 `10.5281/zenodo.22719563`；引用 `v0.3.0` 时使用 `10.5281/zenodo.22719509`；引用项目所有版本时使用概念 DOI `10.5281/zenodo.22681163`。`v0.5.1` 的版本 DOI 将在 Zenodo 归档后补充。
 
 首个版本 DOI，固定对应 `v2026-09-10` 的存档：
 

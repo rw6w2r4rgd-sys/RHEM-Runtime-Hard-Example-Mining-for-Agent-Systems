@@ -2,7 +2,7 @@
 
 **Runtime Hard-Example Mining for Agent Systems**
 
-- 版本：`v0.5.0`（2026-09-12）
+- 版本：`v0.5.1`（2026-09-12）
 - 日期：2026-09-10 首发 / 2026-09-12 更新
 - 定位：核心发明点论述 / 可验证首发底稿
 - 作者：徐应生
@@ -409,8 +409,8 @@ Skill 化的价值：
   title={Runtime Hard-Example Mining for Agent Systems (RHEM)},
   author={徐应生},
   year={2026},
-  version={0.5.0},
-  doi={10.5281/zenodo.22719697},
+  version={0.5.1},
+  doi={10.5281/zenodo.22681163},
   howpublished={GitHub repository},
   note={First release: 2026-09-10}
 }
