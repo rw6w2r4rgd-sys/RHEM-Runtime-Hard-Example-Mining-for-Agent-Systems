@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """RHEM — Runtime Hard-Example Mining for Agent Systems（参考实现）。"""
 
+from .distillation import DistillationDecision, HardExampleDistiller
 from .engine import (
     AdaptiveGatePolicy,
     Decisioner,
@@ -23,10 +24,12 @@ __all__ = [
     "AdaptiveGatePolicy",
     "CATEGORY_LABELS",
     "Decisioner",
+    "DistillationDecision",
     "ErrorCategory",
     "GateDecision",
     "GatePolicy",
     "GraphAnalyzer",
+    "HardExampleDistiller",
     "GraphEdge",
     "GraphFinding",
     "GraphNode",
@@ -37,4 +40,4 @@ __all__ = [
     "TraversalPolicy",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

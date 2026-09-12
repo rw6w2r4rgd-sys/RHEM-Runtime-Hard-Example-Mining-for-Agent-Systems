@@ -1,0 +1,36 @@
+{
+  "title": "RHEM - Runtime Hard-Example Mining for Agent Systems",
+  "upload_type": "software",
+  "description": "<p>RHEM is a runtime hard-example mining reference implementation for Agent systems. Version 0.3.0 adds opt-in hard-example distillation: pre-admission fractionation, feedback-ledger-based in-library re-distillation, core promotion, downweighting, culling, and rollback-governed patches. It does not claim production performance or statistical optimality.</p>",
+  "creators": [
+    {
+      "name": "徐应生"
+    }
+  ],
+  "publication_date": "2026-09-12",
+  "version": "0.3.0",
+  "license": "MIT",
+  "language": "zho",
+  "keywords": [
+    "hard example mining",
+    "agent systems",
+    "runtime learning",
+    "adaptive gating",
+    "hard-example distillation",
+    "rollback"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/rw6w2r4rgd-sys/RHEM-Runtime-Hard-Example-Mining-for-Agent-Systems",
+      "relation": "isSupplementTo",
+      "resource_type": "software"
+    },
+    {
+      "identifier": "10.5281/zenodo.22681163",
+      "scheme": "doi",
+      "relation": "isVersionOf",
+      "resource_type": "software"
+    }
+  ],
+  "notes": "Prepared metadata for RHEM v0.3.0. Zenodo assigns the immutable version DOI when the corresponding GitHub release is archived."
+}

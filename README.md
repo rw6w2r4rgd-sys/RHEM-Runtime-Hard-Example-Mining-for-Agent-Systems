@@ -1,6 +1,6 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](CHANGELOG.md)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22681163.svg)](https://doi.org/10.5281/zenodo.22681163)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -13,7 +13,7 @@ RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
 - 这里公开的是方法论、定位说明和 MIT 参考实现；
 - 不包含生产环境的防篡改、私有探针、内部部署脚本；
 - 当前没有 benchmark、线上 A/B 或生产性能数据，因此不声称加速倍数、准确率提升或行业领先；
-- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
+- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、难例蒸馏、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
 
 ## 为什么需要 RHEM
 
@@ -25,7 +25,7 @@ RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
 
 > 这次任务为什么会失败？错误属于识别、流程、规则还是知识？下次如何立刻避免？
 
-RHEM 把“错误现场”当作可回收资产。错误不是只写进日志，而是带着来源、证据和处置路径进入待学习区；累计达到门控后才允许并库，避免一次误报直接污染长期记忆。
+RHEM 把“错误现场”当作可回收资产。错误不是只写进日志，而是带着来源、证据和处置路径进入待学习区；累计达到门控后还要经过可选蒸馏，才允许进入并库动作，避免一次误报直接污染长期记忆。
 
 一句话概括：
 
@@ -167,6 +167,8 @@ RHEM 不替人猜标准答案，只上报：
         v
      门控通过
         |
+        +--> 可选蒸馏：high 放行 / medium, low 继续等待
+        |
         +--> 识别错误 -> 别名补丁 --------> 即时生效
         +--> 流程错误 -> 结构性配置补丁 --> 即时生效
         +--> 规则缺失 -> 药方 -> 人工批准 -> 规则补丁
@@ -178,6 +180,7 @@ RHEM 不替人猜标准答案，只上报：
         +--> before/after 快照
         +--> 顺序回滚
         +--> 历史难例复扫
+        +--> 可选库内回炼：core / downweighted / cull
 ```
 
 ### 门控
@@ -204,6 +207,27 @@ engine = LearningEngine(
 ```
 
 自适应策略仍只调节“收得快慢”，不改变对错标准、护栏域或知识真实性。默认参数和试点流程见 [自适应门控](docs/ADAPTIVE-GATING.md)。
+
+### 难例蒸馏
+
+`v0.3.0` 新增可选的 `HardExampleDistiller`，默认关闭。显式启用后：
+
+- 并库前按复发压力、跨来源证据和风险锁分为 `high` / `medium` / `low`；
+- 只有高价值样本在门控通过后继续进入原有并库或提案流程；
+- 库内按命中数、场景覆盖、连续失败反馈和闲置时间做回炼；
+- 多场景共证可升为 `core`，长期无价值记录可降权或删除；
+- 回炼先给只读计划，再通过补丁应用，仍可回滚。
+
+```python
+from rhem import HardExampleDistiller, LearningEngine
+
+engine = LearningEngine(
+    store,
+    distiller=HardExampleDistiller(),
+)
+```
+
+蒸馏只决定“哪些记录值得留”，不碰对错标准和护栏域。完整边界与已验证范围见 [难例蒸馏](docs/DISTILLATION.md)。
 
 ### 人工批准
 
@@ -261,7 +285,8 @@ py -X utf8 -m unittest discover -s tests -p "test_*.py" -v
 4. 知识缺口先上报，人工归因后才写词条库；
 5. 护栏域拒绝带保护目标的运行期补丁；
 6. 最新补丁回滚后，复扫结果发生变化；
-7. 显式启用自适应门控后，快速复发将门槛从 `3` 降到 `2`，并把门控依据写入补丁。
+7. 显式启用自适应门控后，快速复发将门槛从 `3` 降到 `2`，并把门控依据写入补丁；
+8. 显式启用难例蒸馏后，单来源重复会停留待定，跨来源复发可并库，多场景命中可升为 `core`。
 
 demo 使用合成数据，例如 `order-104`、`ZL-9`，不包含真实订单、店名、坐标或客户信息。
 
@@ -272,9 +297,10 @@ rhem/
   __init__.py   公开入口
   models.py     Incident、ErrorCategory、HardExampleGroup 与异常
   graph.py      BFS/DFS 图探针、根因候选、图簇发现
-  store.py      JSON 记忆库、图簇、护栏域、补丁、回滚、审计日志
-  engine.py     图探针接入、固定/自适应门控、四类出口、人工批准、默认复扫
-  demo.py       四类难例与图探针的离线演示
+  distillation.py  并库前分馏、反馈账本、库内回炼与补丁动作
+  store.py      JSON 记忆库、蒸馏账本、图簇、护栏域、补丁、回滚、审计日志
+  engine.py     图探针、固定/自适应门控、蒸馏接入、四类出口、人工批准、默认复扫
+  demo.py       四类难例、图探针、门控与蒸馏的离线演示
 tests/          单元测试
 ```
 
@@ -400,6 +426,9 @@ after = engine.rescan()
 - 长期安静保持基准 `3`，高危和复查失败锁到 `5` 并转人工；
 - 自适应门控决策写入审计日志，并随提案、补丁和补丁元数据保存；
 - 可要求多个来源后才并库；
+- 难例蒸馏可拦截单来源低价值样本；
+- 多场景命中可升为 core，连续失败可降权，长期闲置可清除并可回滚；
+- 反馈账本可由 record_feedback 或显式 rescan(record_feedback=True) 回填；
 - 规则缺失和知识缺口必须人工步骤；
 - 补丁带 before/after 快照；
 - 回滚保持补丁顺序约束；
@@ -411,6 +440,7 @@ after = engine.rescan()
 
 - 对真实生产任务能提高多少准确率；
 - 能节省多少成本或延迟；
+- 蒸馏阈值和 30/90 天周期在真实长尾上的统计最优性；
 - 门控阈值在长尾分布上的统计最优性；
 - LLM 置信度校准已经可靠；
 - 可在多进程、多租户或高并发环境下直接使用。
@@ -422,6 +452,7 @@ after = engine.rescan()
 - [x] 带来源标记的待学习区
 - [x] 同族累计门控
 - [x] 可选自适应门控 `v0.2.0`
+- [x] 可选难例蒸馏 `v0.3.0`
 - [x] BFS/DFS 双阶段图探针与图簇门控
 - [x] 识别错误自动进入别名库
 - [x] 流程错误结构化修复
@@ -437,16 +468,17 @@ after = engine.rescan()
 
 ## 版本
 
-当前参考实现版本为 `v0.2.0`，日期 `2026-09-12`。本版新增可选自适应门控，但默认仍使用固定 `3` 次门控。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前参考实现版本为 `v0.3.0`，日期 `2026-09-12`。本版新增可选难例蒸馏；默认仍使用固定 `3` 次门控，也不会自动启用蒸馏。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 文档
 
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
-- [版本变更](CHANGELOG.md)：`v0.2.0` 与 `v0.1.2` 的版本记录
+- [版本变更](CHANGELOG.md)：`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
 - [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
 - [双阶段图探针](docs/GRAPH-PROBE.md)：BFS/DFS 语义、图格式、图簇门控、人工接管条件与局限
 - [自适应门控](docs/ADAPTIVE-GATING.md)：连续复发压力、2/3/5 门槛、风险锁、审计与试点边界
+- [难例蒸馏](docs/DISTILLATION.md)：并库前分馏、反馈账本、库内回炼、补丁边界与试点说明
 
 ## 引用
 
@@ -456,6 +488,8 @@ after = engine.rescan()
 徐应生. (2026). RHEM — Runtime Hard-Example Mining for Agent Systems (概念 DOI).
 Zenodo. https://doi.org/10.5281/zenodo.22681163
 ```
+
+`v0.3.0` 的版本元数据已写入 `.zenodo.json` 和 `CITATION.cff`；对应版本 DOI 将在 GitHub Release 触发 Zenodo 归档后生成。
 
 首个版本 DOI，固定对应 `v2026-09-10` 的存档：
 

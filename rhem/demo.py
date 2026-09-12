@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RHEM 可离线演示：把附带的 README 方法跑成四类难例闭环。"""
+"""RHEM 可离线演示：把四类难例、门控与蒸馏跑成闭环。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
+from .distillation import HardExampleDistiller
 from .engine import AdaptiveGatePolicy, LearningEngine
 from .models import CATEGORY_LABELS, ErrorCategory, GuardrailViolation, Incident
 from .store import RhemStore
@@ -63,7 +64,7 @@ def main() -> None:
     engine = LearningEngine(store)
 
     print("=" * 74)
-    print("RHEM v0.2.0 参考实现演示：错一次，教会一类；免重训，当场生效")
+    print("RHEM v0.3.0 参考实现演示：错一次，教会一类；免重训，当场生效")
     print("=" * 74)
     print(f"持久化目录: {store.root}")
     print(f"门控: 同一图簇或同族 {engine.gate.min_occurrences} 个独立证据后进入并库判断")
@@ -291,6 +292,85 @@ def main() -> None:
             f"gate_reason={meta['gate_decision']['reason']}"
         )
     print("    -> 默认门控未改变；此策略需要显式传入 AdaptiveGatePolicy。")
+    print()
+
+    # ---------- 8. 难例蒸馏试点 ----------
+    print("--- 8) 难例蒸馏：先分馏价值，再按反馈账本回炼 ---")
+    distill_store = RhemStore(root / "distillation")
+    distill_engine = LearningEngine(
+        distill_store,
+        distiller=HardExampleDistiller(),
+    )
+    for idx, occurred_at in enumerate([
+        "2026-09-10T00:00:00Z",
+        "2026-09-10T01:00:00Z",
+        "2026-09-10T02:00:00Z",
+    ], start=1):
+        outcome = _feed(
+            distill_engine,
+            ErrorCategory.RECOGNITION,
+            "slot:distill:single",
+            "same-observer",
+            "单来源重复反馈。",
+            {"alias": "S", "canonical": "s"},
+            expected="s",
+            actual="S",
+            occurred_at=occurred_at,
+        )
+    print(
+        "    -> 单来源重复: "
+        f"event={outcome['event']} "
+        f"tier={outcome['distillation_decision']['tier']} "
+        f"reason={outcome['distillation_decision']['reason']}"
+    )
+
+    for idx, source in enumerate(("task-a", "task-b", "task-c"), start=1):
+        outcome = _feed(
+            distill_engine,
+            ErrorCategory.RECOGNITION,
+            "slot:distill:cross",
+            source,
+            "跨来源重复反馈。",
+            {"alias": "X", "canonical": "x"},
+            expected="x",
+            actual="X",
+            occurred_at=f"2026-09-10T0{idx}:00:00Z",
+        )
+    print(
+        "    -> 跨来源复发: "
+        f"event={outcome['event']} "
+        f"tier={outcome['distillation_decision']['tier']} "
+        f"patch={outcome['patch_id']}"
+    )
+
+    for scenario in ("checkout", "support", "checkout"):
+        distill_store.record_feedback(
+            "alias",
+            "x",
+            scenario,
+            resolved=True,
+        )
+    plan = distill_engine.redistill(now="2026-09-12T00:00:00Z")
+    applied = distill_engine.redistill(
+        apply=True,
+        actor="human:demo",
+        now="2026-09-12T00:00:00Z",
+    )
+    quality = distill_store.view()["alias_rules"]["x"]["distillation"]
+    print(
+        "    -> 回炼计划: "
+        f"core={plan['summary']['core']} "
+        f"downweight={plan['summary']['downweight']} "
+        f"cull={plan['summary']['cull']}"
+    )
+    print(
+        "    -> 多场景证据已升为核心: "
+        f"quality={quality['quality_tier']} "
+        f"hits={quality['hits']} "
+        f"scenarios={len(quality['scenario_sources'])} "
+        f"patch={applied['patch_id']}"
+    )
+    print("    -> 默认引擎未启用蒸馏；显式传入 HardExampleDistiller 才生效。")
     print()
 
     print("--- 结果总览 ---")

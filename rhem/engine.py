@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from .distillation import HardExampleDistiller
 from .graph import GraphAnalyzer, GraphFinding
 from .models import (
     ErrorCategory,
@@ -305,11 +306,13 @@ class LearningEngine:
         gate: Optional[GatePolicy] = None,
         decisioner: Optional[Decisioner] = None,
         graph_analyzer: Optional[GraphAnalyzer] = None,
+        distiller: Optional[HardExampleDistiller] = None,
     ) -> None:
         self.store = store
         self.gate = gate or GatePolicy()
         self.decisioner = decisioner or Decisioner()
         self.graph_analyzer = graph_analyzer or GraphAnalyzer()
+        self.distiller = distiller
 
     # ----------------------------------------------------------
     # 主入口：现场错误/用户纠错 → 待学习区 → 门控
@@ -336,6 +339,18 @@ class LearningEngine:
         gate_decision = decision.to_dict()
         record_id = cluster_key or incident.family
         self.store.log_gate_decision(record_id, gate_decision)
+        distillation_decision = None
+        if self.distiller is not None:
+            distillation_decision = self.distiller.classify(
+                gate_record,
+                gate_decision,
+                graph_finding,
+            ).to_dict()
+            self.store.mark_distillation_decision(
+                incident.family,
+                distillation_decision,
+                cluster_key=cluster_key,
+            )
         outcome = {
             "incident_id": incident.id,
             "family": incident.family,
@@ -348,6 +363,7 @@ class LearningEngine:
             ),
             "graph_finding": graph_finding,
             "gate_decision": gate_decision,
+            "distillation_decision": distillation_decision,
             "event": "waiting",
             "message": (
                 f"已进入待学习区；同族累计 {group['occurrences']} 次，"
@@ -393,6 +409,18 @@ class LearningEngine:
                 "图探针达到门控，但无法给出单一路径："
                 + "；".join(reasons or ["图结构不明确"])
                 + "。已转人工复核。"
+            )
+            return outcome
+        if (
+            distillation_decision is not None
+            and not distillation_decision["allowed"]
+        ):
+            outcome["event"] = "distillation_hold"
+            outcome["message"] = (
+                "门控已通过，但难例蒸馏判定当前价值等级为 "
+                f"{distillation_decision['tier']}（"
+                f"{distillation_decision['reason']}）；"
+                "暂不并库，继续积累跨来源证据。"
             )
             return outcome
         if (
@@ -634,8 +662,52 @@ class LearningEngine:
         return outcome
 
     # ----------------------------------------------------------
-    # 人工批准
+    # 库内回炼：只通过补丁改质量账本、禁用或删除陈旧记录
     # ----------------------------------------------------------
+    def redistill(
+        self,
+        *,
+        apply: bool = False,
+        now: Optional[str] = None,
+        actor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """生成回炼计划；显式 apply 时才生成可回滚补丁。"""
+
+        distiller = self.distiller or HardExampleDistiller()
+        plan = distiller.plan_library(
+            self.store.list_distillation_records(),
+            now=now,
+        )
+        self.store.log_distillation_plan(plan)
+        plan["applied"] = False
+        plan["patch_id"] = None
+        if not apply:
+            return plan
+        if not actor:
+            raise ValueError("redistill(apply=True) requires actor")
+        if not plan["actions"]:
+            plan["applied"] = True
+            return plan
+
+        counts = plan.get("summary") or {}
+        patch = self.store.commit(
+            actions=copy.deepcopy(plan["actions"]),
+            summary=(
+                "难例蒸馏回炼："
+                f"core={counts.get('core', 0)}, "
+                f"downweight={counts.get('downweight', 0)}, "
+                f"cull={counts.get('cull', 0)}"
+            ),
+            actor=actor if actor.startswith("human:") else f"human:{actor}",
+            distillation_plan=copy.deepcopy(plan),
+        )
+        plan["applied"] = True
+        plan["patch_id"] = patch["id"]
+        return plan
+
+    # ----------------------------------------------------------
+    # 人工批准
+    # ----------------------------------------------------------'
     def approve(
         self,
         proposal_id: str,
@@ -718,6 +790,8 @@ class LearningEngine:
     def rescan(
         self,
         resolver: Optional[Callable[[Dict[str, Any]], bool]] = None,
+        *,
+        record_feedback: bool = False,
     ) -> Dict[str, Any]:
         rows = self.store.list_incidents(active_only=True)
         resolved = 0
@@ -725,6 +799,8 @@ class LearningEngine:
         detail: List[Dict[str, Any]] = []
         for row in rows:
             ok = resolver(row) if resolver else self._default_resolver(row)
+            if record_feedback:
+                self._record_rescan_feedback(row, bool(ok))
             detail.append({
                 "incident_id": row["id"],
                 "family": row["family"],
@@ -740,6 +816,46 @@ class LearningEngine:
             "detail": detail,
         }
 
+    def _record_rescan_feedback(
+        self,
+        row: Dict[str, Any],
+        resolved: bool,
+    ) -> None:
+        view = self.store.view()
+        category = row["category"]
+        evidence = row.get("evidence") or {}
+        scenario = row.get("source") or row["id"]
+        if category == ErrorCategory.RECOGNITION.value:
+            canonical = evidence.get("canonical") or row.get("expected")
+            if canonical and canonical in view["alias_rules"]:
+                self.store.record_feedback(
+                    "alias",
+                    canonical,
+                    scenario,
+                    resolved=resolved,
+                )
+            return
+        if category == ErrorCategory.RULE_GAP.value:
+            family = row["family"]
+            for rule_id, rule in view["operational_rules"].items():
+                if rule.get("family") == family:
+                    self.store.record_feedback(
+                        "rule",
+                        rule_id,
+                        scenario,
+                        resolved=resolved,
+                    )
+            return
+        if category == ErrorCategory.KNOWLEDGE_GAP.value:
+            term = evidence.get("term") or row["family"]
+            if term in view["terms"]:
+                self.store.record_feedback(
+                    "term",
+                    term,
+                    scenario,
+                    resolved=resolved,
+                )
+
     def _default_resolver(self, row: Dict[str, Any]) -> bool:
         view = self.store.view()
         category = row["category"]
@@ -748,7 +864,13 @@ class LearningEngine:
             canonical = evidence.get("canonical") or row.get("expected")
             alias = evidence.get("alias") or row.get("actual")
             rule = view["alias_rules"].get(canonical)
-            return bool(rule and alias and alias in rule["aliases"])
+            status = (rule.get("distillation") or {}).get("status") if rule else None
+            return bool(
+                rule
+                and status == "active"
+                and alias
+                and alias in rule["aliases"]
+            )
         if category == ErrorCategory.PROCESS.value:
             fix = evidence.get("fix") or {}
             settings = view["process_settings"]
@@ -764,5 +886,6 @@ class LearningEngine:
         if category == ErrorCategory.KNOWLEDGE_GAP.value:
             term = evidence.get("term") or row["family"]
             record = view["terms"].get(term)
-            return bool(record and record.get("canonical"))
+            status = (record.get("distillation") or {}).get("status") if record else None
+            return bool(record and status == "active" and record.get("canonical"))
         return False

@@ -27,6 +27,26 @@ DEFAULT_PROCESS_SETTINGS: Dict[str, Any] = {
     "deadlock_detection_s": 10.0,
 }
 
+def _default_distillation(created_at: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "quality_tier": "standard",
+        "status": "active",
+        "hits": 0,
+        "misses": 0,
+        "consecutive_misses": 0,
+        "scenario_sources": [],
+        "last_hit_at": None,
+        "last_miss_at": None,
+        "last_feedback_at": None,
+        "last_evaluated_at": None,
+        "last_evaluation_reason": None,
+        "superseded_by": None,
+        "superseded_at": None,
+        "patch_id": None,
+        "created_at": created_at or utc_now(),
+    }
+
+
 DEFAULT_GUARDRAILS: Dict[str, Any] = {
     "schema": GUARDRAIL_SCHEMA,
     "frozen": True,
@@ -119,6 +139,14 @@ class RhemStore:
             for cluster in data["clusters"].values():
                 cluster.setdefault("occurrence_times", [])
                 cluster.setdefault("gate_flags", {})
+            for collection in ("alias_rules", "operational_rules", "terms"):
+                for record in data[collection].values():
+                    record.setdefault(
+                        "distillation",
+                        _default_distillation(record.get("created_at")),
+                    )
+                    record["distillation"].setdefault("consecutive_misses", 0)
+                    record["distillation"].setdefault("superseded_by", None)
             return data
         data = self._default_memory()
         self._write_json(self.memory_file, data)
@@ -176,6 +204,156 @@ class RhemStore:
         if not row:
             raise NotFound(f"proposal not found: {proposal_id}")
         return copy.deepcopy(row)
+
+    def list_distillation_records(self) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for domain, collection in (
+            ("alias", "alias_rules"),
+            ("rule", "operational_rules"),
+            ("term", "terms"),
+        ):
+            for key, record in self.state[collection].items():
+                rows.append({
+                    "domain": domain,
+                    "key": key,
+                    "record": copy.deepcopy(record),
+                })
+        return rows
+
+    def record_feedback(
+        self,
+        domain: str,
+        key: str,
+        scenario: str,
+        *,
+        resolved: bool,
+        at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """记录一次命中或失败反馈，作为库内回炼账本。"""
+
+        collection = {
+            "alias": "alias_rules",
+            "alias_rule": "alias_rules",
+            "rule": "operational_rules",
+            "operational_rule": "operational_rules",
+            "term": "terms",
+            "knowledge_term": "terms",
+        }.get(domain)
+        if collection is None:
+            raise NotFound(f"unsupported distillation domain: {domain}")
+        if not scenario or not str(scenario).strip():
+            raise ValueError("scenario must not be empty")
+        record = self.state[collection].get(key)
+        if not record:
+            raise NotFound(f"distillation record not found: {domain}:{key}")
+
+        now = at or utc_now()
+        metadata = record.setdefault(
+            "distillation",
+            _default_distillation(record.get("created_at")),
+        )
+        metadata.setdefault("created_at", record.get("created_at") or now)
+        scenarios = metadata.setdefault("scenario_sources", [])
+        if scenario not in scenarios:
+            scenarios.append(scenario)
+            metadata["scenario_sources"] = scenarios[-200:]
+        if resolved:
+            metadata["hits"] = int(metadata.get("hits", 0)) + 1
+            metadata["consecutive_misses"] = 0
+            metadata["last_hit_at"] = now
+        else:
+            metadata["misses"] = int(metadata.get("misses", 0)) + 1
+            metadata["consecutive_misses"] = (
+                int(metadata.get("consecutive_misses", 0)) + 1
+            )
+            metadata["last_miss_at"] = now
+        metadata["last_feedback_at"] = now
+        self._save()
+        self._log("distillation_feedback", {
+            "domain": domain,
+            "key": key,
+            "scenario": scenario,
+            "resolved": bool(resolved),
+            "hits": metadata["hits"],
+            "misses": metadata["misses"],
+            "scenarios": len(metadata["scenario_sources"]),
+        })
+        return copy.deepcopy(record)
+
+    def mark_superseded(
+        self,
+        domain: str,
+        key: str,
+        superseded_by: str,
+        *,
+        at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """显式记录一条规则被新规则替代；不自动猜语义覆盖关系。"""
+
+        collection = {
+            "alias": "alias_rules",
+            "alias_rule": "alias_rules",
+            "rule": "operational_rules",
+            "operational_rule": "operational_rules",
+            "term": "terms",
+            "knowledge_term": "terms",
+        }.get(domain)
+        if collection is None:
+            raise NotFound(f"unsupported distillation domain: {domain}")
+        if not superseded_by or not str(superseded_by).strip():
+            raise ValueError("superseded_by must not be empty")
+        record = self.state[collection].get(key)
+        if not record:
+            raise NotFound(f"distillation record not found: {domain}:{key}")
+        now = at or utc_now()
+        metadata = record.setdefault(
+            "distillation",
+            _default_distillation(record.get("created_at")),
+        )
+        metadata["superseded_by"] = superseded_by
+        metadata["superseded_at"] = now
+        metadata["last_feedback_at"] = now
+        self._save()
+        self._log("distillation_superseded", {
+            "domain": domain,
+            "key": key,
+            "superseded_by": superseded_by,
+        })
+        return copy.deepcopy(record)
+
+    def mark_distillation_decision(
+        self,
+        family: str,
+        decision: Dict[str, Any],
+        *,
+        cluster_key: Optional[str] = None,
+    ) -> None:
+        group = self.state["hard_examples"].get(family)
+        if not group:
+            raise NotFound(f"hard-example family not found: {family}")
+        fields = {
+            "distillation_tier": decision.get("tier"),
+            "distillation_reason": decision.get("reason"),
+            "distillation_signals": copy.deepcopy(decision.get("signals")),
+            "distillation_evaluated_at": decision.get("evaluated_at"),
+        }
+        group.update(fields)
+        if cluster_key:
+            cluster = self.state["clusters"].get(cluster_key)
+            if cluster:
+                cluster.update(fields)
+        self._save()
+        self._log("distillation_evaluated", {
+            "record_id": cluster_key or family,
+            "decision": copy.deepcopy(decision),
+        })
+
+    def log_distillation_plan(self, plan: Dict[str, Any]) -> None:
+        self._log("distillation_planned", {
+            "evaluated_at": plan.get("evaluated_at"),
+            "summary": copy.deepcopy(plan.get("summary")),
+            "action_count": len(plan.get("actions") or []),
+        })
 
     def list_prescriptions(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         rows = list(self.state["prescriptions"].values())
@@ -495,6 +673,10 @@ class RhemStore:
         "add_term": "terms",
         "remove_term": "terms",
         "set_process_settings": "process_settings",
+        "distill_alias": "alias_rules",
+        "distill_rule": "operational_rules",
+        "distill_term": "terms",
+        "delete_alias": "alias_rules",
     }
 
     def commit(
@@ -505,6 +687,7 @@ class RhemStore:
         actor: str = "system",
         incident_ids: Optional[List[str]] = None,
         gate_decision: Optional[Dict[str, Any]] = None,
+        distillation_plan: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._validate_actions(actions)
         patch_id = f"p{self.state['next_patch_seq']:04d}"
@@ -524,6 +707,7 @@ class RhemStore:
             "status": "active",
             "incident_ids": list(incident_ids or []),
             "gate_decision": copy.deepcopy(gate_decision),
+            "distillation_plan": copy.deepcopy(distillation_plan),
             "actions": copy.deepcopy(actions),
             "before": before,
             "after": after,
@@ -536,6 +720,7 @@ class RhemStore:
             "status": "active",
             "created_at": now,
             "gate_decision": copy.deepcopy(gate_decision),
+            "distillation_plan": copy.deepcopy(distillation_plan),
         }
         self._save()
         self._log("patch_applied", {
@@ -573,6 +758,20 @@ class RhemStore:
             self._apply_remove_term(action)
         elif op == "set_process_settings":
             self._apply_process_settings(action)
+        elif op == "distill_alias":
+            self._apply_distillation(
+                action, patch_id, "alias_rules", "canonical"
+            )
+        elif op == "distill_rule":
+            self._apply_distillation(
+                action, patch_id, "operational_rules", "rule_id"
+            )
+        elif op == "distill_term":
+            self._apply_distillation(
+                action, patch_id, "terms", "term"
+            )
+        elif op == "delete_alias":
+            self._apply_delete_alias(action)
         else:
             raise GuardrailViolation(f"unsupported op: {op}")
 
@@ -580,17 +779,23 @@ class RhemStore:
         canonical = action["canonical"]
         rule = self.state["alias_rules"].get(canonical)
         if rule is None:
+            created_at = utc_now()
             rule = {
                 "canonical": canonical,
                 "aliases": [],
                 "sources": [],
-                "created_at": utc_now(),
+                "created_at": created_at,
                 "patch_id": None,
+                "distillation": _default_distillation(created_at),
             }
             self.state["alias_rules"][canonical] = rule
             action["created"] = True
         else:
             action["created"] = False
+        rule.setdefault(
+            "distillation",
+            _default_distillation(rule.get("created_at")),
+        )
         added = [
             alias for alias in action["aliases"]
             if alias not in rule["aliases"]
@@ -606,6 +811,13 @@ class RhemStore:
         rule = copy.deepcopy(action["rule"])
         rule_id = rule["id"]
         before = self.state["operational_rules"].get(rule_id)
+        if before and "distillation" in before and "distillation" not in rule:
+            rule["distillation"] = copy.deepcopy(before["distillation"])
+        else:
+            rule.setdefault(
+                "distillation",
+                _default_distillation(rule.get("created_at")),
+            )
         action["before"] = copy.deepcopy(before)
         action["after"] = rule
         self.state["operational_rules"][rule_id] = rule
@@ -619,17 +831,59 @@ class RhemStore:
 
     def _apply_add_term(self, action: Dict[str, Any], patch_id: str) -> None:
         record = copy.deepcopy(action["term"])
-        action["before"] = copy.deepcopy(
-            self.state["terms"].get(record["term"])
-        )
-        action["after"] = record
+        before = self.state["terms"].get(record["term"])
+        if before and "distillation" in before and "distillation" not in record:
+            record["distillation"] = copy.deepcopy(before["distillation"])
+        else:
+            record.setdefault(
+                "distillation",
+                _default_distillation(record.get("created_at")),
+            )
+        action["before"] = copy.deepcopy(before)
         record["patch_id"] = patch_id
+        action["after"] = copy.deepcopy(record)
         self.state["terms"][record["term"]] = record
 
     def _apply_remove_term(self, action: Dict[str, Any]) -> None:
         term = action["term"]
         action["before"] = copy.deepcopy(self.state["terms"].get(term))
         self.state["terms"].pop(term, None)
+
+    def _apply_distillation(
+        self,
+        action: Dict[str, Any],
+        patch_id: str,
+        collection: str,
+        key_field: str,
+    ) -> None:
+        key = action[key_field]
+        record = self.state[collection].get(key)
+        if record is None:
+            raise NotFound(f"distillation record not found: {collection}:{key}")
+        action["before"] = copy.deepcopy(record)
+        metadata = record.setdefault(
+            "distillation",
+            _default_distillation(record.get("created_at")),
+        )
+        for field in (
+            "quality_tier",
+            "status",
+            "last_evaluated_at",
+            "last_evaluation_reason",
+        ):
+            if field in action:
+                metadata[field] = copy.deepcopy(action[field])
+        metadata["patch_id"] = patch_id
+        if collection == "operational_rules" and "enabled" in action:
+            record["enabled"] = bool(action["enabled"])
+        action["after"] = copy.deepcopy(record)
+
+    def _apply_delete_alias(self, action: Dict[str, Any]) -> None:
+        canonical = action["canonical"]
+        action["before"] = copy.deepcopy(
+            self.state["alias_rules"].get(canonical)
+        )
+        self.state["alias_rules"].pop(canonical, None)
 
     def _apply_process_settings(self, action: Dict[str, Any]) -> None:
         settings = action["settings"]
@@ -706,6 +960,32 @@ class RhemStore:
             before = action.get("before") or {}
             for key, value in before.items():
                 self.state["process_settings"][key] = copy.deepcopy(value)
+        elif op == "distill_alias":
+            canonical = action["canonical"]
+            before = action.get("before")
+            if before is None:
+                self.state["alias_rules"].pop(canonical, None)
+            else:
+                self.state["alias_rules"][canonical] = copy.deepcopy(before)
+        elif op == "distill_rule":
+            rule_id = action["rule_id"]
+            before = action.get("before")
+            if before is None:
+                self.state["operational_rules"].pop(rule_id, None)
+            else:
+                self.state["operational_rules"][rule_id] = copy.deepcopy(before)
+        elif op == "distill_term":
+            term = action["term"]
+            before = action.get("before")
+            if before is None:
+                self.state["terms"].pop(term, None)
+            else:
+                self.state["terms"][term] = copy.deepcopy(before)
+        elif op == "delete_alias":
+            canonical = action["canonical"]
+            before = action.get("before")
+            if before is not None:
+                self.state["alias_rules"][canonical] = copy.deepcopy(before)
         else:
             raise GuardrailViolation(f"cannot undo op: {op}")
 

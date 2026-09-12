@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.0] - 2026-09-12
+
+### Added
+
+- 可选 `HardExampleDistiller`，支持并库前 `high` / `medium` / `low` 分馏；
+- 单来源低价值样本拦截，跨来源复发样本放行；
+- 库内命中数、场景覆盖、累计失败与连续失败反馈账本；
+- `record_feedback()` 与 `rescan(record_feedback=True)` 反馈回填；
+- `mark_superseded()` 显式替代账本，支持被新规则覆盖后的降权；
+- 可审计的库内回炼计划，以及 `core`、`downweighted`、`cull` 三类结果；
+- 蒸馏专用补丁动作、before/after 快照、回滚恢复和 `distillation_plan` 元数据。
+
+### Changed
+
+- 别名、运行规则和词条记录自动补齐 `distillation` 质量账本；
+- 运行规则降权后会设置 `enabled=False`；
+- 别名和词条降权后，默认复扫不再把它们视为有效修复；
+- 包版本更新为 `0.3.0`。
+
+### Compatibility
+
+- 默认 `LearningEngine(store)` 不启用蒸馏，原门控与并库行为保持不变；
+- 蒸馏需要显式传入 `distiller=HardExampleDistiller()`；
+- `rescan()` 默认不写反馈，仍保持旧行为。
+
 ## [0.2.0] - 2026-09-12
 
 ### Added
