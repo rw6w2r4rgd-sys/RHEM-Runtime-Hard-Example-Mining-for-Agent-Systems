@@ -56,6 +56,7 @@ DEFAULT_GUARDRAILS: Dict[str, Any] = {
         "terms",
         "induction_findings",
         "process_settings",
+        "damping_state",
     ],
     "protected_domains": [
         "guardrails",
@@ -70,6 +71,7 @@ DEFAULT_GUARDRAILS: Dict[str, Any] = {
         "护栏域冻结；护栏变更只能走人工维护通道",
         "难例来源与原始证据只追加、不覆盖",
         "蒸馏反哺候选必须人工批准；结构弱点和隐患不得自动执行",
+        "阻尼冷却只冻结自动进化动作，不冻结人工审批",
     ],
 }
 
@@ -109,6 +111,14 @@ class RhemStore:
             if induction_constraint not in constraints:
                 constraints.append(induction_constraint)
                 data["hard_constraints"] = constraints
+            if "damping_state" not in editable:
+                editable.append("damping_state")
+                data["editable_domains"] = editable
+            damping_constraint = "阻尼冷却只冻结自动进化动作，不冻结人工审批"
+            constraints = list(data.get("hard_constraints") or [])
+            if damping_constraint not in constraints:
+                constraints.append(damping_constraint)
+                data["hard_constraints"] = constraints
             self._write_json(self.guardrail_file, data)
             return data
         self._write_json(self.guardrail_file, DEFAULT_GUARDRAILS)
@@ -130,6 +140,10 @@ class RhemStore:
             "clusters": {},
             "prescriptions": {},
             "induction_findings": {},
+            "damping_state": {
+                "controls": {},
+                "events": [],
+            },
             "patch_meta": {},
         }
 
@@ -148,6 +162,9 @@ class RhemStore:
             data.setdefault("clusters", {})
             data.setdefault("prescriptions", {})
             data.setdefault("induction_findings", {})
+            data.setdefault("damping_state", {"controls": {}, "events": []})
+            data["damping_state"].setdefault("controls", {})
+            data["damping_state"].setdefault("events", [])
             data.setdefault("patch_meta", {})
             for group in data["hard_examples"].values():
                 group.setdefault("occurrence_times", [])
@@ -255,6 +272,18 @@ class RhemStore:
             row.get("key", ""),
         ))
         return copy.deepcopy(rows)
+
+    def list_patches(self) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for patch_id in sorted(
+            self.state["patch_meta"],
+            key=lambda value: int(value[1:]),
+        ):
+            path = self._patch_path(patch_id)
+            if not path.exists():
+                continue
+            rows.append(json.loads(path.read_text(encoding="utf-8")))
+        return rows
 
     def create_induction_finding(
         self,
@@ -774,6 +803,8 @@ class RhemStore:
         "distill_term": "terms",
         "delete_alias": "alias_rules",
         "resolve_induction": "induction_findings",
+        "set_damping_control": "damping_state",
+        "clear_damping_control": "damping_state",
     }
 
     def commit(
@@ -786,6 +817,7 @@ class RhemStore:
         gate_decision: Optional[Dict[str, Any]] = None,
         distillation_plan: Optional[Dict[str, Any]] = None,
         induction_plan: Optional[Dict[str, Any]] = None,
+        damping_plan: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._validate_actions(actions)
         patch_id = f"p{self.state['next_patch_seq']:04d}"
@@ -807,6 +839,7 @@ class RhemStore:
             "gate_decision": copy.deepcopy(gate_decision),
             "distillation_plan": copy.deepcopy(distillation_plan),
             "induction_plan": copy.deepcopy(induction_plan),
+            "damping_plan": copy.deepcopy(damping_plan),
             "actions": copy.deepcopy(actions),
             "before": before,
             "after": after,
@@ -821,6 +854,7 @@ class RhemStore:
             "gate_decision": copy.deepcopy(gate_decision),
             "distillation_plan": copy.deepcopy(distillation_plan),
             "induction_plan": copy.deepcopy(induction_plan),
+            "damping_plan": copy.deepcopy(damping_plan),
         }
         self._save()
         self._log("patch_applied", {
@@ -874,6 +908,10 @@ class RhemStore:
             self._apply_delete_alias(action)
         elif op == "resolve_induction":
             self._apply_resolve_induction(action, patch_id)
+        elif op == "set_damping_control":
+            self._apply_set_damping_control(action, patch_id)
+        elif op == "clear_damping_control":
+            self._apply_clear_damping_control(action)
         else:
             raise GuardrailViolation(f"unsupported op: {op}")
 
@@ -1018,6 +1056,60 @@ class RhemStore:
         action["after"] = after
         self.state["process_settings"] = after
 
+    def _apply_set_damping_control(
+        self,
+        action: Dict[str, Any],
+        patch_id: str,
+    ) -> None:
+        key = action["key"]
+        state = self.state.setdefault(
+            "damping_state",
+            {"controls": {}, "events": []},
+        )
+        controls = state.setdefault("controls", {})
+        before = copy.deepcopy(controls.get(key))
+        control = {
+            "key": key,
+            "domain": action.get("domain"),
+            "status": action.get("status", "frozen"),
+            "reason": action.get("reason"),
+            "coefficient": action.get("coefficient"),
+            "frozen_until": action.get("frozen_until"),
+            "requires_human": bool(action.get("requires_human", False)),
+            "evidence": copy.deepcopy(action.get("evidence") or {}),
+            "frozen_at": utc_now(),
+            "patch_id": patch_id,
+        }
+        controls[key] = control
+        state.setdefault("events", []).append({
+            "action": "set",
+            "key": key,
+            "reason": control["reason"],
+            "at": control["frozen_at"],
+            "patch_id": patch_id,
+        })
+        state["events"] = state["events"][-200:]
+        action["before"] = before
+        action["after"] = copy.deepcopy(control)
+
+    def _apply_clear_damping_control(self, action: Dict[str, Any]) -> None:
+        key = action["key"]
+        state = self.state.setdefault(
+            "damping_state",
+            {"controls": {}, "events": []},
+        )
+        controls = state.setdefault("controls", {})
+        before = copy.deepcopy(controls.get(key))
+        controls.pop(key, None)
+        state.setdefault("events", []).append({
+            "action": "clear",
+            "key": key,
+            "at": utc_now(),
+        })
+        state["events"] = state["events"][-200:]
+        action["before"] = before
+        action["after"] = None
+
     def rollback(self, patch_id: str) -> Dict[str, Any]:
         meta = self.state["patch_meta"].get(patch_id)
         if not meta or not self._patch_path(patch_id).exists():
@@ -1115,6 +1207,26 @@ class RhemStore:
                 self.state["induction_findings"].pop(finding_id, None)
             else:
                 self.state["induction_findings"][finding_id] = copy.deepcopy(before)
+        elif op == "set_damping_control":
+            key = action["key"]
+            before = action.get("before")
+            controls = self.state.setdefault("damping_state", {}).setdefault(
+                "controls",
+                {},
+            )
+            if before is None:
+                controls.pop(key, None)
+            else:
+                controls[key] = copy.deepcopy(before)
+        elif op == "clear_damping_control":
+            key = action["key"]
+            before = action.get("before")
+            controls = self.state.setdefault("damping_state", {}).setdefault(
+                "controls",
+                {},
+            )
+            if before is not None:
+                controls[key] = copy.deepcopy(before)
         else:
             raise GuardrailViolation(f"cannot undo op: {op}")
 

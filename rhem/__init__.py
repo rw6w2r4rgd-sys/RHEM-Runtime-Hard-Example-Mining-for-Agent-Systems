@@ -2,6 +2,7 @@
 """RHEM — Runtime Hard-Example Mining for Agent Systems（参考实现）。"""
 
 from .distillation import DistillationDecision, HardExampleDistiller
+from .damping import DampingDecision, DampingSuppressor
 from .engine import (
     AdaptiveGatePolicy,
     Decisioner,
@@ -26,6 +27,8 @@ __all__ = [
     "CATEGORY_LABELS",
     "Decisioner",
     "DistillationDecision",
+    "DampingDecision",
+    "DampingSuppressor",
     "DistillateInducer",
     "ErrorCategory",
     "GateDecision",
@@ -43,4 +46,4 @@ __all__ = [
     "TraversalPolicy",
 ]
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"

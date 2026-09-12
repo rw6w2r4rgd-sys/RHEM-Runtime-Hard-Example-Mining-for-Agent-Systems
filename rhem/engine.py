@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .distillation import HardExampleDistiller
+from .damping import DampingSuppressor
 from .graph import GraphAnalyzer, GraphFinding
 from .induction import DistillateInducer
 from .models import (
@@ -315,6 +316,7 @@ class LearningEngine:
         graph_analyzer: Optional[GraphAnalyzer] = None,
         distiller: Optional[HardExampleDistiller] = None,
         inducer: Optional[DistillateInducer] = None,
+        damping: Optional[DampingSuppressor] = None,
     ) -> None:
         self.store = store
         self.gate = gate or GatePolicy()
@@ -322,6 +324,7 @@ class LearningEngine:
         self.graph_analyzer = graph_analyzer or GraphAnalyzer()
         self.distiller = distiller
         self.inducer = inducer
+        self.damping = damping
 
     # ----------------------------------------------------------
     # 主入口：现场错误/用户纠错 → 待学习区 → 门控
@@ -373,6 +376,7 @@ class LearningEngine:
             "graph_finding": graph_finding,
             "gate_decision": gate_decision,
             "distillation_decision": distillation_decision,
+            "damping_decision": None,
             "event": "waiting",
             "message": (
                 f"已进入待学习区；同族累计 {group['occurrences']} 次，"
@@ -420,6 +424,72 @@ class LearningEngine:
                 + "。已转人工复核。"
             )
             return outcome
+        if self.damping is not None:
+            damping_decision = self.damping.evaluate(
+                self.store,
+                incident,
+                occurrences,
+                now=incident.occurred_at,
+            )
+            outcome["damping_decision"] = damping_decision.to_dict()
+            if damping_decision.action == "dead_zone":
+                outcome["event"] = "damping_dead_zone"
+                outcome["message"] = (
+                    "阻尼死区拦截：当前证据仍低于稳定计数下限，"
+                    "本轮不触发自动进化动作。"
+                )
+                return outcome
+            if damping_decision.action == "cooldown":
+                outcome["event"] = "damping_cooldown"
+                outcome["message"] = (
+                    "阻尼冷却中：该域自动改动已冻结，人工审批不受影响。"
+                    f"冷却截止：{damping_decision.cooldown_until}。"
+                )
+                return outcome
+            if damping_decision.action == "thaw":
+                thaw_patch = self.store.commit(
+                    actions=[self.damping.clear_action(
+                        damping_decision.fingerprint
+                    )],
+                    summary=(
+                        "阻尼冷却到期解冻："
+                        f"{damping_decision.fingerprint}"
+                    ),
+                    actor="rhem:damping",
+                    incident_ids=list(gate_record["incident_ids"]),
+                    gate_decision=outcome.get("gate_decision"),
+                    damping_plan=damping_decision.to_dict(),
+                )
+                outcome["damping_thaw_patch_id"] = thaw_patch["id"]
+            elif damping_decision.action in {
+                "freeze_oscillation",
+                "freeze_regret",
+            }:
+                actions = [self.damping.control_action(damping_decision)]
+                actions.extend(self.damping.downweight_actions(
+                    self.store,
+                    damping_decision.fingerprint,
+                ))
+                patch = self.store.commit(
+                    actions=actions,
+                    summary=(
+                        "阻尼抑制触发："
+                        f"{damping_decision.reason} / "
+                        f"{damping_decision.fingerprint}"
+                    ),
+                    actor="rhem:damping",
+                    incident_ids=list(gate_record["incident_ids"]),
+                    gate_decision=outcome.get("gate_decision"),
+                    damping_plan=damping_decision.to_dict(),
+                )
+                outcome["event"] = "damping_frozen"
+                outcome["message"] = (
+                    "阻尼抑制已触发：该域自动改动进入冷却，"
+                    "相关规则按需降权；人工审批不受影响。"
+                    f"补丁：{patch['id']}。"
+                )
+                outcome["patch_id"] = patch["id"]
+                return outcome
         if (
             distillation_decision is not None
             and not distillation_decision["allowed"]

@@ -1,7 +1,7 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
-[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](CHANGELOG.md)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22719758.svg)](https://doi.org/10.5281/zenodo.22719758)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](CHANGELOG.md)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22681163.svg)](https://doi.org/10.5281/zenodo.22681163)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
@@ -13,7 +13,7 @@ RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
 - 这里公开的是方法论、定位说明和 MIT 参考实现；
 - 不包含生产环境的防篡改、私有探针、内部部署脚本；
 - 当前没有 benchmark、线上 A/B 或生产性能数据，因此不声称加速倍数、准确率提升或行业领先；
-- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、难例蒸馏、蒸馏反哺、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
+- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、难例蒸馏、蒸馏反哺、阻尼抑制、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
 
 ## 为什么需要 RHEM
 
@@ -167,6 +167,8 @@ RHEM 不替人猜标准答案，只上报：
         v
      门控通过
         |
+        +--> 可选阻尼：死区 / 振荡 / 反悔 -> 冷却或继续
+        |
         +--> 可选蒸馏：high 放行 / medium, low 继续等待
         |
         +--> 识别错误 -> 别名补丁 --------> 即时生效
@@ -254,6 +256,28 @@ plan = engine.induct(now="2026-09-12T00:00:00Z")
 
 规则模板必须人工批准后才通过补丁写入；结构弱点和隐患预测只接受或拒绝审查结论，不会自动改设计、代码或探针。完整边界见 [蒸馏反哺](docs/INDUCTION.md)。
 
+### 阻尼抑制
+
+`v0.6.0` 新增可选的 `DampingSuppressor`，默认关闭。它补的是自动进化过程的稳定性，而不是业务对错判断：
+
+- 死区：证据计数不足时，不触发自动并库动作；
+- A-B-A 检测：从补丁历史中发现同一目标反复修改；
+- 反悔率：统计同一规则的“生效、回滚、再生效”；
+- 冷却：发现振荡或反悔后，冻结该目标的自动进化动作；
+- 解冻：冷却到期后创建清除控制的补丁，再继续原流程；
+- 规则降权：规则反悔时可生成 `distill_rule` 补丁，将规则降权并禁用。
+
+```python
+from rhem import DampingSuppressor, LearningEngine
+
+engine = LearningEngine(
+    store,
+    damping=DampingSuppressor(),
+)
+```
+
+阻尼系数在当前参考实现中用于计算冷却时长，不是风险概率，也不改业务答案、规则方向或护栏域。冷却只冻结自动动作，不冻结人工审批。完整边界与试点条件见 [阻尼抑制](docs/DAMPING.md)。
+
 ### 人工批准
 
 规则缺失和知识缺口不会自动补答案。
@@ -280,6 +304,7 @@ plan = engine.induct(now="2026-09-12T00:00:00Z")
 - `terms`
 - `induction_findings`
 - `process_settings`
+- `damping_state`
 
 以下域被参考实现视为保护域：
 
@@ -326,8 +351,9 @@ rhem/
   graph.py      BFS/DFS 图探针、根因候选、图簇发现
   distillation.py  并库前分馏、反馈账本、库内回炼与补丁动作
   induction.py  从 core/high 账本归纳规则模板、结构弱点与隐患候选
-  store.py      JSON 记忆库、蒸馏与反哺账本、图簇、护栏域、补丁、回滚、审计日志
-  engine.py     图探针、固定/自适应门控、蒸馏与反哺接入、四类出口、人工批准、默认复扫
+  store.py      JSON 记忆库、蒸馏/反哺/阻尼状态、图簇、护栏域、补丁、回滚、审计日志
+  engine.py     图探针、固定/自适应门控、蒸馏/反哺/阻尼接入、四类出口、人工批准、默认复扫
+  damping.py    死区、A-B-A 振荡、反悔率、冷却与规则降权
   demo.py       四类难例、图探针、门控、蒸馏与反哺的离线演示
 tests/          单元测试
 ```
@@ -458,6 +484,7 @@ after = engine.rescan()
 - 多场景命中可升为 core，连续失败可降权，长期闲置可清除并可回滚；
 - 反馈账本可由 record_feedback 或显式 rescan(record_feedback=True) 回填；
 - 蒸馏反哺只从 core/high 账本生成候选，人工批准与拒绝均可回滚；
+- 阻尼死区、A-B-A 振荡冻结、反悔率降权、冷却解冻及其回滚均可运行；
 - 规则缺失和知识缺口必须人工步骤；
 - 补丁带 before/after 快照；
 - 回滚保持补丁顺序约束；
@@ -471,6 +498,7 @@ after = engine.rescan()
 - 能节省多少成本或延迟；
 - 蒸馏阈值和 30/90 天周期在真实长尾上的统计最优性；
 - 蒸馏反哺对真实泛化、准确率或探针收益的提升幅度；
+- 阻尼阈值、冷却时长和反悔率在真实长尾上的统计最优性；
 - 门控阈值在长尾分布上的统计最优性；
 - LLM 置信度校准已经可靠；
 - 可在多进程、多租户或高并发环境下直接使用。
@@ -486,6 +514,7 @@ after = engine.rescan()
 - [x] 可选蒸馏反哺 `v0.4.0`
 - [x] 白皮书完整版 `v0.5.0`
 - [x] 归档元数据修正 `v0.5.1`
+- [x] 可选阻尼抑制 `v0.6.0`
 - [x] BFS/DFS 双阶段图探针与图簇门控
 - [x] 识别错误自动进入别名库
 - [x] 流程错误结构化修复
@@ -501,18 +530,19 @@ after = engine.rescan()
 
 ## 版本
 
-当前参考实现版本为 `v0.5.1`，日期 `2026-09-12`。本版修正 `v0.5.0` 发布时未同步版本元数据的问题，使归档内部版本、白皮书版本和 Zenodo 记录保持一致；运行行为没有变化。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前参考实现版本为 `v0.6.0`，日期 `2026-09-12`。本版新增默认关闭的阻尼抑制：死区、A-B-A 振荡检测、反悔率告警、冷却解冻和规则降权；不改变未启用阻尼时的旧行为。`v0.6.0` 的独立 Zenodo 版本 DOI 尚未生成，归档前引用本版请使用概念 DOI。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 文档
 
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
-- [版本变更](CHANGELOG.md)：`v0.5.1`、`v0.5.0`、`v0.4.0`、`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
+- [版本变更](CHANGELOG.md)：`v0.6.0`、`v0.5.1`、`v0.5.0`、`v0.4.0`、`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
 - [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
 - [双阶段图探针](docs/GRAPH-PROBE.md)：BFS/DFS 语义、图格式、图簇门控、人工接管条件与局限
 - [自适应门控](docs/ADAPTIVE-GATING.md)：连续复发压力、2/3/5 门槛、风险锁、审计与试点边界
 - [难例蒸馏](docs/DISTILLATION.md)：并库前分馏、反馈账本、库内回炼、补丁边界与试点说明
 - [蒸馏反哺](docs/INDUCTION.md)：候选归纳、人工批准、结构复核、隐患排序与未验证边界
+- [阻尼抑制](docs/DAMPING.md)：死区、A-B-A 振荡、反悔率、冷却解冻、护栏边界与试点条件
 
 ## 引用
 
@@ -522,6 +552,8 @@ after = engine.rescan()
 徐应生. (2026). RHEM — Runtime Hard-Example Mining for Agent Systems (概念 DOI).
 Zenodo. https://doi.org/10.5281/zenodo.22681163
 ```
+
+`v0.6.0` 的独立版本 DOI 尚未生成。在 Zenodo 完成本版归档前，引用 `v0.6.0` 请使用上面的概念 DOI；不要为它填写未经归档的版本 DOI。
 
 `v0.5.1` 的版本 DOI，固定对应本次归档元数据修正版本：
 
@@ -551,7 +583,7 @@ Zenodo. https://doi.org/10.5281/zenodo.22719563
 Zenodo. https://doi.org/10.5281/zenodo.22719509
 ```
 
-引用 `v0.5.1` 时使用 `10.5281/zenodo.22719758`；引用 `v0.5.0` 时使用 `10.5281/zenodo.22719697`；引用 `v0.4.0` 时使用 `10.5281/zenodo.22719563`；引用 `v0.3.0` 时使用 `10.5281/zenodo.22719509`；引用项目所有版本时使用概念 DOI `10.5281/zenodo.22681163`。
+引用 `v0.6.0` 且尚未完成版本归档时使用概念 DOI `10.5281/zenodo.22681163`；引用 `v0.5.1` 时使用 `10.5281/zenodo.22719758`；引用 `v0.5.0` 时使用 `10.5281/zenodo.22719697`；引用 `v0.4.0` 时使用 `10.5281/zenodo.22719563`；引用 `v0.3.0` 时使用 `10.5281/zenodo.22719509`；引用项目所有版本时使用概念 DOI `10.5281/zenodo.22681163`。
 
 首个版本 DOI，固定对应 `v2026-09-10` 的存档：
 

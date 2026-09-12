@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.6.0] - 2026-09-12
+
+### Added
+
+- 新增默认关闭的 `DampingSuppressor`，支持死区、A-B-A 振荡检测、反悔率告警、冷却与到期解冻；
+- `damping_state` 护栏域，以及 `set_damping_control`、`clear_damping_control` 两类可回滚补丁动作；
+- 规则反悔时生成 `distill_rule` 降权动作，将规则降权并禁用；
+- `damping_plan` 补丁元数据，保存指纹、原因、阻尼系数、冷却截止时间和证据摘要；
+- 阻尼专题文档与 5 项单元测试。
+
+### Changed
+
+- 白皮书第 7 章从四组件扩展为五组件，新增稳压器定位；
+- README、CITATION、Zenodo 元数据、包版本和演示标题统一为 `v0.6.0`；
+- 阻尼只调整自动进化动作的时机和冷却时长，不改变业务对错、规则方向或护栏域。
+
+### Compatibility
+
+- 默认 `LearningEngine(store)` 行为与此前版本一致；
+- 阻尼需要显式传入 `damping=DampingSuppressor()`；
+- 冷却只冻结自动动作，人工审批不受影响；
+- 旧版本 DOI 和既有补丁接口保持兼容。
+
+### Validation
+
+- 47 项单元测试通过；
+- 未完成生产 A/B、真实长尾统计最优性或高并发验证。
+
+### DOI
+
+- `v0.6.0` 尚未生成独立 Zenodo 版本 DOI；
+- 版本归档前引用本版请使用概念 DOI `10.5281/zenodo.22681163`。
+
 ## [0.5.1] - 2026-09-12
 
 ### Fixed
