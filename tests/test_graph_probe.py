@@ -188,6 +188,7 @@ class GraphGateIntegrationTest(unittest.TestCase):
         assert cluster is not None
         self.assertEqual(cluster["occurrences"], 1)
         self.assertEqual(cluster["symptom_count"], 3)
+        self.assertEqual(len(cluster["occurrence_times"]), 1)
         self.assertIsNone(self.store.latest_active_patch())
 
     def test_cross_session_evidence_applies_one_cluster_patch(self) -> None:
@@ -221,6 +222,7 @@ class GraphGateIntegrationTest(unittest.TestCase):
         reloaded_cluster = reloaded.get_cluster("root:shared_lock")
         assert reloaded_cluster is not None
         self.assertEqual(reloaded_cluster["status"], "applied")
+        self.assertEqual(len(reloaded_cluster["occurrence_times"]), 3)
         self.assertEqual(reloaded_cluster["evidence_keys"], [
             "root:shared_lock@session-1",
             "root:shared_lock@session-2",

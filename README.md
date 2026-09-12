@@ -1,5 +1,6 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22681163.svg)](https://doi.org/10.5281/zenodo.22681163)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -12,7 +13,7 @@ RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
 - 这里公开的是方法论、定位说明和 MIT 参考实现；
 - 不包含生产环境的防篡改、私有探针、内部部署脚本；
 - 当前没有 benchmark、线上 A/B 或生产性能数据，因此不声称加速倍数、准确率提升或行业领先；
-- 目前能证明的是：四类难例链路、BFS/DFS 图探针、门控、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
+- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
 
 ## 为什么需要 RHEM
 
@@ -159,6 +160,7 @@ RHEM 不替人猜标准答案，只上报：
         |
         v
  图簇优先、family 兜底的独立证据检查
+ 可选自适应门控：常规 3、快速复发 2、高危 5
         |
         +---- 未达门控 ----------> 继续等待，不改库
         |
@@ -182,16 +184,26 @@ RHEM 不替人猜标准答案，只上报：
 
 门控的作用不是判断“这条反馈一定是真的”，而是避免单次误报直接进入长期记忆。
 
-当前参考实现的门控是：
+默认请求仍使用固定 `3` 次门控，保持旧行为兼容。`v0.2.0` 新增可显式启用的 `AdaptiveGatePolicy`：
 
 - 有图时优先按 `cluster_key` 统计独立证据，无图时退回同一 `family`；
 - 同一根因、同一会话的多个症状只算一个证据，不同会话可分别累计；
-- 默认累计 `3` 个独立证据，并可选要求来源数达到下限；
-- 计数和来源分别保存在 `clusters` 与 `hard_examples`；
-- 达到门控前，只记录、不修改知识或流程配置；
+- 快速复发时可把门槛降到 `2`，长期安静时保持基准 `3`；
+- 高危、手动锁定或复查失败时锁到 `5`，达到阈值后仍需人工处理；
+- 连续 `sensitivity` 信号与实际 `effective_min_occurrences` 分开输出；
+- 每次门控判断写入 `events.jsonl`，实际变更随补丁保存 `gate_decision`；
 - 图结构不明确时，不自动应用识别或流程补丁，转人工复核。
 
-这是可运行的行为基线，不是自适应概率模型。README 不会把“计数门控”夸成“已验证的统计学习”。
+```python
+from rhem import AdaptiveGatePolicy, LearningEngine
+
+engine = LearningEngine(
+    store,
+    gate=AdaptiveGatePolicy(),
+)
+```
+
+自适应策略仍只调节“收得快慢”，不改变对错标准、护栏域或知识真实性。默认参数和试点流程见 [自适应门控](docs/ADAPTIVE-GATING.md)。
 
 ### 人工批准
 
@@ -248,7 +260,8 @@ py -X utf8 -m unittest discover -s tests -p "test_*.py" -v
 3. 规则缺失先生成药方，人工批准后才写规则库；
 4. 知识缺口先上报，人工归因后才写词条库；
 5. 护栏域拒绝带保护目标的运行期补丁；
-6. 最新补丁回滚后，复扫结果发生变化。
+6. 最新补丁回滚后，复扫结果发生变化；
+7. 显式启用自适应门控后，快速复发将门槛从 `3` 降到 `2`，并把门控依据写入补丁。
 
 demo 使用合成数据，例如 `order-104`、`ZL-9`，不包含真实订单、店名、坐标或客户信息。
 
@@ -260,7 +273,7 @@ rhem/
   models.py     Incident、ErrorCategory、HardExampleGroup 与异常
   graph.py      BFS/DFS 图探针、根因候选、图簇发现
   store.py      JSON 记忆库、图簇、护栏域、补丁、回滚、审计日志
-  engine.py     图探针接入、门控、四类出口、人工批准、默认复扫
+  engine.py     图探针接入、固定/自适应门控、四类出口、人工批准、默认复扫
   demo.py       四类难例与图探针的离线演示
 tests/          单元测试
 ```
@@ -383,6 +396,9 @@ after = engine.rescan()
 - 同会话同根因的多个症状只计一个独立证据，跨会话证据可累计；
 - 循环、深度截断和低置信度边会转人工；
 - 默认门控需要累计次数；
+- 快速复发可触发自适应 `2` 次门槛；
+- 长期安静保持基准 `3`，高危和复查失败锁到 `5` 并转人工；
+- 自适应门控决策写入审计日志，并随提案、补丁和补丁元数据保存；
 - 可要求多个来源后才并库；
 - 规则缺失和知识缺口必须人工步骤；
 - 补丁带 before/after 快照；
@@ -405,6 +421,7 @@ after = engine.rescan()
 
 - [x] 带来源标记的待学习区
 - [x] 同族累计门控
+- [x] 可选自适应门控 `v0.2.0`
 - [x] BFS/DFS 双阶段图探针与图簇门控
 - [x] 识别错误自动进入别名库
 - [x] 流程错误结构化修复
@@ -415,15 +432,21 @@ after = engine.rescan()
 - [x] 护栏域运行期禁写
 - [ ] 接入真实 Agent 轨迹与验证器
 - [ ] 建立离线评估集、回归集与冲突检测
-- [ ] 将计数门控升级为带精度与冲突验证的门控
+- [ ] 将自适应门控接入真实评估集与冲突验证
 - [ ] 输出可供未来模型训练的已标注难例数据
+
+## 版本
+
+当前参考实现版本为 `v0.2.0`，日期 `2026-09-12`。本版新增可选自适应门控，但默认仍使用固定 `3` 次门控。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 文档
 
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
+- [版本变更](CHANGELOG.md)：`v0.2.0` 与 `v0.1.2` 的版本记录
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
 - [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
 - [双阶段图探针](docs/GRAPH-PROBE.md)：BFS/DFS 语义、图格式、图簇门控、人工接管条件与局限
+- [自适应门控](docs/ADAPTIVE-GATING.md)：连续复发压力、2/3/5 门槛、风险锁、审计与试点边界
 
 ## 引用
 

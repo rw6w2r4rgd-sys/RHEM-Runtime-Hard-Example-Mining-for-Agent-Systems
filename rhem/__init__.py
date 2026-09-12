@@ -1,7 +1,13 @@
 # -*- coding: utf-8 -*-
 """RHEM — Runtime Hard-Example Mining for Agent Systems（参考实现）。"""
 
-from .engine import Decisioner, GatePolicy, LearningEngine
+from .engine import (
+    AdaptiveGatePolicy,
+    Decisioner,
+    GateDecision,
+    GatePolicy,
+    LearningEngine,
+)
 from .graph import (
     GraphAnalyzer,
     GraphEdge,
@@ -14,9 +20,11 @@ from .models import CATEGORY_LABELS, ErrorCategory, Incident
 from .store import RhemStore
 
 __all__ = [
+    "AdaptiveGatePolicy",
     "CATEGORY_LABELS",
     "Decisioner",
     "ErrorCategory",
+    "GateDecision",
     "GatePolicy",
     "GraphAnalyzer",
     "GraphEdge",
@@ -29,4 +37,4 @@ __all__ = [
     "TraversalPolicy",
 ]
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"

@@ -171,7 +171,7 @@ DFS 选择当前可走路径中最长的一条作为 `cause_path`，末端节点
 
 ## 与门控的关系
 
-没有图时，门控仍按原 `family` 工作，兼容旧数据。
+没有图时，门控仍按原 `family` 工作，兼容旧数据。固定门控和 `v0.2.0` 的可选 `AdaptiveGatePolicy` 都可以读取图簇记录。
 
 有图时：
 
@@ -193,6 +193,8 @@ sources
 families
 incident_ids
 evidence_keys
+occurrence_times
+gate_flags
 status
 patch_id
 proposal_id

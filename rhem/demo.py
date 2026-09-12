@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
-from .engine import LearningEngine
+from .engine import AdaptiveGatePolicy, LearningEngine
 from .models import CATEGORY_LABELS, ErrorCategory, GuardrailViolation, Incident
 from .store import RhemStore
 
@@ -21,16 +21,20 @@ def _feed(
     evidence: Dict[str, Any],
     expected: str | None = None,
     actual: str | None = None,
+    occurred_at: str | None = None,
 ) -> Dict[str, Any]:
-    incident = Incident(
-        category=category,
-        family=family,
-        message=message,
-        source=source,
-        evidence=evidence,
-        expected=expected,
-        actual=actual,
-    )
+    incident_data = {
+        "category": category,
+        "family": family,
+        "message": message,
+        "source": source,
+        "evidence": evidence,
+        "expected": expected,
+        "actual": actual,
+    }
+    if occurred_at:
+        incident_data["occurred_at"] = occurred_at
+    incident = Incident(**incident_data)
     return engine.ingest(incident)
 
 
@@ -59,7 +63,7 @@ def main() -> None:
     engine = LearningEngine(store)
 
     print("=" * 74)
-    print("RHEM 参考实现演示：错一次，教会一类；免重训，当场生效")
+    print("RHEM v0.2.0 参考实现演示：错一次，教会一类；免重训，当场生效")
     print("=" * 74)
     print(f"持久化目录: {store.root}")
     print(f"门控: 同一图簇或同族 {engine.gate.min_occurrences} 个独立证据后进入并库判断")
@@ -244,6 +248,49 @@ def main() -> None:
         f"    回滚后复扫: total={rescan_after['total']} "
         f"resolved={rescan_after['resolved']} failed={rescan_after['failed']}"
     )
+    print()
+
+    # ---------- 7. 自适应门控试点 ----------
+    print("--- 7) 自适应门控：快速复发降到 2 次，但只作为显式试点 ---")
+    adaptive_store = RhemStore(root / "adaptive_gate")
+    adaptive_engine = LearningEngine(
+        adaptive_store,
+        gate=AdaptiveGatePolicy(),
+    )
+    for idx, (source, occurred_at) in enumerate([
+        ("adaptive-a", "2026-09-10T00:00:00Z"),
+        ("adaptive-b", "2026-09-10T01:00:00Z"),
+    ], start=1):
+        outcome = _feed(
+            adaptive_engine,
+            ErrorCategory.RECOGNITION,
+            "slot:adaptive:city",
+            f"task:{source}",
+            "城市槽位在短时间内快速复发。",
+            {
+                "alias": "X",
+                "canonical": "x",
+            },
+            expected="x",
+            actual="X",
+            occurred_at=occurred_at,
+        )
+        decision = outcome["gate_decision"]
+        print(
+            f"    -> 自适应 #{idx}: event={outcome['event']} "
+            f"threshold={decision['effective_min_occurrences']} "
+            f"reason={decision['reason']} "
+            f"sensitivity={decision['sensitivity']}"
+        )
+    adaptive_patch = adaptive_store.latest_active_patch()
+    if adaptive_patch:
+        meta = adaptive_store.view()["patch_meta"][adaptive_patch]
+        print(
+            "    -> 补丁已保留门控依据: "
+            f"patch={adaptive_patch} "
+            f"gate_reason={meta['gate_decision']['reason']}"
+        )
+    print("    -> 默认门控未改变；此策略需要显式传入 AdaptiveGatePolicy。")
     print()
 
     print("--- 结果总览 ---")

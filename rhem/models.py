@@ -58,12 +58,13 @@ class Incident:
     message: str
     source: str
     evidence: Dict[str, Any]
-    id: str = field(default_factory=lambda: new_id("inc"), init=False)
-    occurred_at: str = field(default_factory=utc_now, init=False)
     expected: Optional[str] = None
     actual: Optional[str] = None
     active: bool = True
     cluster_key: Optional[str] = None
+    # 保留在末尾，避免破坏旧版按位置传参的 Incident(...) 调用。
+    id: str = field(default_factory=lambda: new_id("inc"))
+    occurred_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

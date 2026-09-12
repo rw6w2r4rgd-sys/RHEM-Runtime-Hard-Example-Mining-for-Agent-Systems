@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .graph import GraphAnalyzer, GraphFinding
@@ -19,20 +21,233 @@ from .models import (
 from .store import RhemStore
 
 
+@dataclass(frozen=True)
+class GateDecision:
+    """一次门控判断的完整说明，便于审计和复现实验。"""
+
+    allowed: bool
+    mode: str
+    reason: str
+    effective_min_occurrences: int
+    effective_min_sources: int
+    occurrences: int
+    sources: int
+    sensitivity: float = 0.0
+    recurrence_per_day: float = 0.0
+    recent_occurrences: int = 0
+    requires_human: bool = False
+    lock_reason: Optional[str] = None
+    evaluated_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "mode": self.mode,
+            "reason": self.reason,
+            "effective_min_occurrences": self.effective_min_occurrences,
+            "effective_min_sources": self.effective_min_sources,
+            "occurrences": self.occurrences,
+            "sources": self.sources,
+            "sensitivity": self.sensitivity,
+            "recurrence_per_day": self.recurrence_per_day,
+            "recent_occurrences": self.recent_occurrences,
+            "requires_human": self.requires_human,
+            "lock_reason": self.lock_reason,
+            "evaluated_at": self.evaluated_at,
+        }
+
+
+def _parse_utc(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+
 @dataclass
 class GatePolicy:
-    """同一图簇或难例族需跨多次累计，达到阈值后才允许并库。"""
+    """固定门控；保留为向后兼容的默认策略。"""
 
     min_occurrences: int = 3
     min_sources: int = 1
 
-    def reached(self, group: Dict[str, Any]) -> bool:
+    def decide(
+        self,
+        group: Dict[str, Any],
+        *,
+        now: Optional[str] = None,
+    ) -> GateDecision:
         occurrences = int(group.get("occurrences", 0))
         sources = set(group.get("sources") or [])
-        return (
+        allowed = (
             occurrences >= self.min_occurrences
             and len(sources) >= self.min_sources
         )
+        return GateDecision(
+            allowed=allowed,
+            mode="fixed",
+            reason="fixed_threshold_reached" if allowed else "fixed_threshold_waiting",
+            effective_min_occurrences=self.min_occurrences,
+            effective_min_sources=self.min_sources,
+            occurrences=occurrences,
+            sources=len(sources),
+            evaluated_at=now,
+        )
+
+    def reached(self, group: Dict[str, Any]) -> bool:
+        return self.decide(group).allowed
+
+
+@dataclass
+class AdaptiveGatePolicy(GatePolicy):
+    """按近期复发压力调档；只改变收得快慢，不改变对错标准。"""
+
+    fast_min_occurrences: int = 2
+    high_risk_min_occurrences: int = 5
+    recurrence_window_days: float = 7.0
+    fast_recent_occurrences: int = 2
+    decay_days: float = 7.0
+
+    def __post_init__(self) -> None:
+        if self.min_occurrences < 1:
+            raise ValueError("min_occurrences must be >= 1")
+        if self.fast_min_occurrences < 1:
+            raise ValueError("fast_min_occurrences must be >= 1")
+        if self.fast_min_occurrences > self.min_occurrences:
+            raise ValueError(
+                "fast_min_occurrences cannot exceed min_occurrences"
+            )
+        if self.high_risk_min_occurrences < self.min_occurrences:
+            raise ValueError(
+                "high_risk_min_occurrences cannot be below min_occurrences"
+            )
+        if self.recurrence_window_days <= 0:
+            raise ValueError("recurrence_window_days must be > 0")
+        if self.fast_recent_occurrences < 1:
+            raise ValueError("fast_recent_occurrences must be >= 1")
+        if self.decay_days <= 0:
+            raise ValueError("decay_days must be > 0")
+
+    def decide(
+        self,
+        group: Dict[str, Any],
+        *,
+        now: Optional[str] = None,
+    ) -> GateDecision:
+        occurrences = int(group.get("occurrences", 0))
+        sources = set(group.get("sources") or [])
+        times = self._occurrence_times(group)
+        evaluated_at = _parse_utc(now) or _parse_utc(group.get("last_seen"))
+        if evaluated_at is None:
+            evaluated_at = datetime.now(timezone.utc)
+
+        recent_occurrences = 0
+        recurrence_per_day = 0.0
+        sensitivity = 0.0
+        if times:
+            window_start = evaluated_at - timedelta(
+                days=self.recurrence_window_days
+            )
+            recent_occurrences = sum(
+                1 for item in times if item >= window_start
+            )
+            if len(times) >= 2:
+                elapsed_days = max(
+                    (times[-1] - times[0]).total_seconds() / 86400.0,
+                    1.0 / 86400.0,
+                )
+                recurrence_per_day = (len(times) - 1) / elapsed_days
+            newest_age_days = max(
+                (evaluated_at - times[-1]).total_seconds() / 86400.0,
+                0.0,
+            )
+            recency_factor = math.exp(
+                -newest_age_days / self.decay_days
+            )
+            density_pressure = min(
+                1.0,
+                recent_occurrences / self.fast_recent_occurrences,
+            )
+            sensitivity = density_pressure * recency_factor
+
+        threshold = self.min_occurrences
+        if sensitivity > 0:
+            reduction = self.min_occurrences - self.fast_min_occurrences
+            threshold = int(
+                math.ceil(
+                    self.min_occurrences
+                    - reduction * sensitivity
+                    - 1e-9
+                )
+            )
+        reason = "base_threshold"
+        if sensitivity >= 1.0:
+            reason = "fast_recurrence"
+        elif recent_occurrences == 0:
+            reason = "quiet_period"
+
+        flags = group.get("gate_flags") or {}
+        requires_human = False
+        lock_reason = None
+        if flags.get("manual_hold"):
+            threshold = self.high_risk_min_occurrences
+            reason = "manual_hold"
+            lock_reason = "manual_hold"
+            requires_human = True
+        elif flags.get("high_risk"):
+            threshold = self.high_risk_min_occurrences
+            reason = "high_risk"
+            lock_reason = "high_risk"
+            requires_human = True
+        if flags.get("recheck_failed"):
+            threshold = self.high_risk_min_occurrences
+            reason = "recheck_failed"
+            lock_reason = "recheck_failed"
+            requires_human = True
+
+        allowed = (
+            occurrences >= threshold
+            and len(sources) >= self.min_sources
+        )
+        return GateDecision(
+            allowed=allowed,
+            mode="adaptive",
+            reason=reason if allowed else f"{reason}_waiting",
+            effective_min_occurrences=threshold,
+            effective_min_sources=self.min_sources,
+            occurrences=occurrences,
+            sources=len(sources),
+            sensitivity=round(sensitivity, 6),
+            recurrence_per_day=round(recurrence_per_day, 6),
+            recent_occurrences=recent_occurrences,
+            requires_human=requires_human,
+            lock_reason=lock_reason,
+            evaluated_at=evaluated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+
+    def _occurrence_times(self, group: Dict[str, Any]) -> List[datetime]:
+        parsed = [
+            item
+            for item in (
+                _parse_utc(value)
+                for value in (group.get("occurrence_times") or [])
+            )
+            if item is not None
+        ]
+        if parsed:
+            return sorted(parsed)
+        # 旧记录没有真实发生时间时，不推测历史分布；从升级后的新事件开始积累。
+        return []
 
 
 class Decisioner:
@@ -117,6 +332,10 @@ class LearningEngine:
         cluster = self.store.get_cluster(cluster_key) if cluster_key else None
         gate_record = cluster or group
         occurrences = int(gate_record.get("occurrences", 0))
+        decision = self._decide_gate(gate_record, now=incident.occurred_at)
+        gate_decision = decision.to_dict()
+        record_id = cluster_key or incident.family
+        self.store.log_gate_decision(record_id, gate_decision)
         outcome = {
             "incident_id": incident.id,
             "family": incident.family,
@@ -128,6 +347,7 @@ class LearningEngine:
                 cluster["symptom_count"] if cluster else group["occurrences"]
             ),
             "graph_finding": graph_finding,
+            "gate_decision": gate_decision,
             "event": "waiting",
             "message": (
                 f"已进入待学习区；同族累计 {group['occurrences']} 次，"
@@ -141,10 +361,16 @@ class LearningEngine:
             outcome["message"] = (
                 f"已进入待学习图簇；根因候选 {root} 累计 {occurrences} "
                 f"个独立证据、{outcome['symptom_count']} 个症状，"
-                "尚未达到门控。"
+                f"本轮门控阈值 {decision.effective_min_occurrences}，尚未达到。"
+            )
+        else:
+            outcome["message"] = (
+                f"已进入待学习区；同族累计 {group['occurrences']} 次，"
+                f"本轮门控阈值 {decision.effective_min_occurrences}，"
+                "尚未达到。"
             )
 
-        if not self.gate.reached(gate_record):
+        if not decision.allowed:
             return outcome
         if gate_record["status"] != "pending":
             outcome["event"] = "already_handled"
@@ -169,6 +395,22 @@ class LearningEngine:
                 + "。已转人工复核。"
             )
             return outcome
+        if (
+            decision.requires_human
+            and incident.category in {
+                ErrorCategory.RECOGNITION,
+                ErrorCategory.PROCESS,
+            }
+        ):
+            self.store.mark_group(incident.family, "needs_human")
+            if cluster:
+                self.store.mark_cluster(cluster["cluster_key"], "needs_human")
+            outcome["event"] = "needs_human_gate"
+            outcome["message"] = (
+                "自适应门控已锁高档并达到阈值；该类不允许自动落补丁，"
+                f"需人工复核。原因：{decision.reason}。"
+            )
+            return outcome
 
         if incident.category == ErrorCategory.RECOGNITION:
             return self._apply_recognition(incident, group, cluster, outcome)
@@ -179,6 +421,35 @@ class LearningEngine:
         if incident.category == ErrorCategory.KNOWLEDGE_GAP:
             return self._report_knowledge(incident, group, cluster, outcome)
         raise ValueError(f"unknown category: {incident.category}")
+
+    def _decide_gate(
+        self,
+        group: Dict[str, Any],
+        *,
+        now: Optional[str],
+    ) -> GateDecision:
+        decide = getattr(self.gate, "decide", None)
+        if callable(decide):
+            return decide(group, now=now)
+
+        # 兼容旧版只实现 reached() 的自定义门控。
+        occurrences = int(group.get("occurrences", 0))
+        sources = len(set(group.get("sources") or []))
+        allowed = bool(self.gate.reached(group))
+        return GateDecision(
+            allowed=allowed,
+            mode="legacy",
+            reason=(
+                "legacy_threshold_reached"
+                if allowed
+                else "legacy_threshold_waiting"
+            ),
+            effective_min_occurrences=int(self.gate.min_occurrences),
+            effective_min_sources=int(self.gate.min_sources),
+            occurrences=occurrences,
+            sources=sources,
+            evaluated_at=now,
+        )
 
     @staticmethod
     def _graph_evidence_key(
@@ -222,6 +493,7 @@ class LearningEngine:
             summary=f"识别难例并库：{alias} -> {canonical}",
             actor="rhem:recognition",
             incident_ids=list(gate_record["incident_ids"]),
+            gate_decision=outcome.get("gate_decision"),
         )
         self.store.mark_group(
             incident.family,
@@ -268,6 +540,7 @@ class LearningEngine:
             summary=f"流程难例结构性修复：{incident.family}",
             actor="rhem:process",
             incident_ids=list(gate_record["incident_ids"]),
+            gate_decision=outcome.get("gate_decision"),
         )
         self.store.mark_group(
             incident.family,
@@ -320,6 +593,7 @@ class LearningEngine:
             detail=rule.get("description", ""),
             incident_ids=list(gate_record["incident_ids"]),
             suggested={"rule": rule},
+            gate_decision=outcome.get("gate_decision"),
         )
         outcome.update({
             "event": "proposal_created",
@@ -350,6 +624,7 @@ class LearningEngine:
             incident_ids=list(gate_record["incident_ids"]),
             suggested=suggestion,
             required_attribution=["canonical", "definition", "kind"],
+            gate_decision=outcome.get("gate_decision"),
         )
         outcome.update({
             "event": "knowledge_reported",

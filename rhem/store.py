@@ -113,6 +113,12 @@ class RhemStore:
             data.setdefault("clusters", {})
             data.setdefault("prescriptions", {})
             data.setdefault("patch_meta", {})
+            for group in data["hard_examples"].values():
+                group.setdefault("occurrence_times", [])
+                group.setdefault("gate_flags", {})
+            for cluster in data["clusters"].values():
+                cluster.setdefault("occurrence_times", [])
+                cluster.setdefault("gate_flags", {})
             return data
         data = self._default_memory()
         self._write_json(self.memory_file, data)
@@ -188,6 +194,14 @@ class RhemStore:
         deduplicate_evidence: bool = False,
     ) -> Dict[str, Any]:
         cluster_key = incident.cluster_key or incident.family
+        gate_context = incident.evidence.get("gate") or {}
+        if not isinstance(gate_context, dict):
+            gate_context = {}
+        gate_flags = {
+            key: bool(gate_context[key])
+            for key in ("high_risk", "manual_hold", "recheck_failed")
+            if key in gate_context
+        }
         existing_group = self.state["hard_examples"].get(incident.family)
         if (
             existing_group
@@ -217,6 +231,8 @@ class RhemStore:
                 "sources": [],
                 "incident_ids": [],
                 "cluster_keys": [],
+                "occurrence_times": [],
+                "gate_flags": {},
                 "first_seen": incident.occurred_at,
                 "last_seen": incident.occurred_at,
                 "status": "pending",
@@ -233,6 +249,9 @@ class RhemStore:
             group["sources"].append(incident.source)
         if incident.id not in group["incident_ids"]:
             group["incident_ids"].append(incident.id)
+        group.setdefault("occurrence_times", []).append(incident.occurred_at)
+        group["occurrence_times"] = group["occurrence_times"][-200:]
+        group.setdefault("gate_flags", {}).update(gate_flags)
 
         cluster = existing_cluster
         if cluster is None:
@@ -245,6 +264,8 @@ class RhemStore:
                 "families": [],
                 "incident_ids": [],
                 "evidence_keys": [],
+                "occurrence_times": [],
+                "gate_flags": {},
                 "first_seen": incident.occurred_at,
                 "last_seen": incident.occurred_at,
                 "status": "pending",
@@ -261,6 +282,10 @@ class RhemStore:
             cluster["occurrences"] += 1
             if key not in cluster["evidence_keys"]:
                 cluster["evidence_keys"].append(key)
+            cluster.setdefault("occurrence_times", []).append(
+                incident.occurred_at
+            )
+            cluster["occurrence_times"] = cluster["occurrence_times"][-200:]
         cluster["last_seen"] = incident.occurred_at
         if incident.source not in cluster["sources"]:
             cluster["sources"].append(incident.source)
@@ -268,6 +293,7 @@ class RhemStore:
             cluster["families"].append(incident.family)
         if incident.id not in cluster["incident_ids"]:
             cluster["incident_ids"].append(incident.id)
+        cluster.setdefault("gate_flags", {}).update(gate_flags)
 
         self._save()
         self._log("incident_recorded", {
@@ -329,6 +355,16 @@ class RhemStore:
             group["proposal_id"] = proposal_id
         self._save()
 
+    def log_gate_decision(
+        self,
+        record_id: str,
+        decision: Dict[str, Any],
+    ) -> None:
+        self._log("gate_evaluated", {
+            "record_id": record_id,
+            "decision": copy.deepcopy(decision),
+        })
+
     # ----------------------------------------------------------
     # 决策器药方（尚未生效，等待人工）
     # ----------------------------------------------------------
@@ -343,6 +379,7 @@ class RhemStore:
         incident_ids: Iterable[str],
         suggested: Optional[Dict[str, Any]] = None,
         required_attribution: Optional[List[str]] = None,
+        gate_decision: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         now = utc_now()
         proposal_id = new_id("proposal")
@@ -357,6 +394,7 @@ class RhemStore:
             "incident_ids": list(incident_ids),
             "suggested": suggested,
             "required_attribution": required_attribution or [],
+            "gate_decision": copy.deepcopy(gate_decision),
             "created_at": now,
             "resolved_at": None,
             "approver": None,
@@ -419,6 +457,7 @@ class RhemStore:
             summary=summary,
             actor=f"human:{approver}",
             incident_ids=incident_ids or proposal["incident_ids"],
+            gate_decision=proposal.get("gate_decision"),
         )
         proposal["status"] = "applied"
         proposal["approver"] = approver
@@ -465,6 +504,7 @@ class RhemStore:
         summary: str,
         actor: str = "system",
         incident_ids: Optional[List[str]] = None,
+        gate_decision: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._validate_actions(actions)
         patch_id = f"p{self.state['next_patch_seq']:04d}"
@@ -483,6 +523,7 @@ class RhemStore:
             "created_at": now,
             "status": "active",
             "incident_ids": list(incident_ids or []),
+            "gate_decision": copy.deepcopy(gate_decision),
             "actions": copy.deepcopy(actions),
             "before": before,
             "after": after,
@@ -494,6 +535,7 @@ class RhemStore:
             "summary": summary,
             "status": "active",
             "created_at": now,
+            "gate_decision": copy.deepcopy(gate_decision),
         }
         self._save()
         self._log("patch_applied", {
