@@ -437,7 +437,7 @@ Skill 化的价值：
   author={徐应生},
   year={2026},
   version={0.7.0},
-  doi={10.5281/zenodo.22681163},
+  doi={10.5281/zenodo.22721810},
   howpublished={GitHub repository},
   note={First release: 2026-09-10}
 }

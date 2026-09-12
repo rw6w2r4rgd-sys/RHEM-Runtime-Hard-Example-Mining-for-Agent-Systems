@@ -38,5 +38,5 @@
       "resource_type": "software"
     }
   ],
-  "notes": "RHEM v0.7.0 is a repository release for opt-in hibernation lifecycle governance. Independent Zenodo version DOIs for v0.7.0 and v0.6.0 have not yet been generated; use the concept DOI 10.5281/zenodo.22681163 when citing these versions before archival. Previous version DOIs remain available: v0.5.1 is 10.5281/zenodo.22719758, v0.5.0 is 10.5281/zenodo.22719697, and v0.4.0 is 10.5281/zenodo.22719563."
+  "notes": "RHEM v0.7.0 is archived with the Zenodo version DOI 10.5281/zenodo.22721810. An independent Zenodo version DOI for v0.6.0 has not yet been generated; use the concept DOI 10.5281/zenodo.22681163 when citing v0.6.0 before archival. Previous version DOIs remain available: v0.5.1 is 10.5281/zenodo.22719758, v0.5.0 is 10.5281/zenodo.22719697, and v0.4.0 is 10.5281/zenodo.22719563."
 }

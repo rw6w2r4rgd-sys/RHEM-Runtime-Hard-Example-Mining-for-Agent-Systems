@@ -25,8 +25,11 @@ keywords:
   - rollback-governed patches
 identifiers:
   - type: doi
+    value: 10.5281/zenodo.22721810
+    description: "Zenodo version DOI for RHEM v0.7.0, the hibernation lifecycle release."
+  - type: doi
     value: 10.5281/zenodo.22681163
-    description: "Zenodo concept DOI for the RHEM project. Use it for v0.7.0 or v0.6.0 until their version DOIs are archived."
+    description: "Zenodo concept DOI for the RHEM project across all versions. Use it for v0.6.0 until its version DOI is archived."
   - type: doi
     value: 10.5281/zenodo.22719758
     description: "Zenodo version DOI for the previous RHEM v0.5.1 release."
