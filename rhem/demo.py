@@ -65,7 +65,7 @@ def main() -> None:
     engine = LearningEngine(store)
 
     print("=" * 74)
-    print("RHEM v0.6.0 参考实现演示：错一次，教会一类；免重训，当场生效")
+    print("RHEM v0.7.0 参考实现演示：错一次，教会一类；免重训，当场生效")
     print("=" * 74)
     print(f"持久化目录: {store.root}")
     print(f"门控: 同一图簇或同族 {engine.gate.min_occurrences} 个独立证据后进入并库判断")

@@ -10,6 +10,7 @@ from .engine import (
     GatePolicy,
     LearningEngine,
 )
+from .hibernation import HibernationDecision, HibernationManager
 from .induction import DistillateInducer, InductionFinding
 from .graph import (
     GraphAnalyzer,
@@ -35,6 +36,8 @@ __all__ = [
     "GatePolicy",
     "GraphAnalyzer",
     "HardExampleDistiller",
+    "HibernationDecision",
+    "HibernationManager",
     "GraphEdge",
     "GraphFinding",
     "GraphNode",
@@ -46,4 +49,4 @@ __all__ = [
     "TraversalPolicy",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

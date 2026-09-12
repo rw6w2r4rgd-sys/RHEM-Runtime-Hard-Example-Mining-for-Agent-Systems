@@ -47,6 +47,21 @@ def _default_distillation(created_at: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+def _default_hibernation(created_at: Optional[str] = None) -> Dict[str, Any]:
+    entered_at = created_at or utc_now()
+    return {
+        "status": "active",
+        "reason": "initial",
+        "entered_at": entered_at,
+        "last_transition_at": entered_at,
+        "observation_started_at": None,
+        "hibernated_at": None,
+        "last_wake_at": None,
+        "patch_id": None,
+        "history": [],
+    }
+
+
 DEFAULT_GUARDRAILS: Dict[str, Any] = {
     "schema": GUARDRAIL_SCHEMA,
     "frozen": True,
@@ -72,6 +87,8 @@ DEFAULT_GUARDRAILS: Dict[str, Any] = {
         "难例来源与原始证据只追加、不覆盖",
         "蒸馏反哺候选必须人工批准；结构弱点和隐患不得自动执行",
         "阻尼冷却只冻结自动进化动作，不冻结人工审批",
+        "冬眠回收必须人工批准；自动冬眠不得删除记录",
+        "冬眠不冻结人工查看与人工唤醒",
     ],
 }
 
@@ -118,6 +135,18 @@ class RhemStore:
             constraints = list(data.get("hard_constraints") or [])
             if damping_constraint not in constraints:
                 constraints.append(damping_constraint)
+                data["hard_constraints"] = constraints
+            hibernation_constraints = [
+                "冬眠回收必须人工批准；自动冬眠不得删除记录",
+                "冬眠不冻结人工查看与人工唤醒",
+            ]
+            constraints = list(data.get("hard_constraints") or [])
+            changed = False
+            for constraint in hibernation_constraints:
+                if constraint not in constraints:
+                    constraints.append(constraint)
+                    changed = True
+            if changed:
                 data["hard_constraints"] = constraints
             self._write_json(self.guardrail_file, data)
             return data
@@ -180,6 +209,10 @@ class RhemStore:
                     )
                     record["distillation"].setdefault("consecutive_misses", 0)
                     record["distillation"].setdefault("superseded_by", None)
+                    record.setdefault(
+                        "hibernation",
+                        _default_hibernation(record.get("created_at")),
+                    )
             return data
         data = self._default_memory()
         self._write_json(self.memory_file, data)
@@ -478,6 +511,16 @@ class RhemStore:
             "evaluated_at": plan.get("evaluated_at"),
             "summary": copy.deepcopy(plan.get("summary")),
             "action_count": len(plan.get("actions") or []),
+        })
+
+    def log_hibernation_plan(self, plan: Dict[str, Any]) -> None:
+        self._log("hibernation_planned", {
+            "evaluated_at": plan.get("evaluated_at"),
+            "summary": copy.deepcopy(plan.get("summary")),
+            "action_count": len(plan.get("actions") or []),
+            "recycle_candidate_count": len(
+                plan.get("recycle_candidates") or []
+            ),
         })
 
     def list_prescriptions(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -805,6 +848,12 @@ class RhemStore:
         "resolve_induction": "induction_findings",
         "set_damping_control": "damping_state",
         "clear_damping_control": "damping_state",
+        "set_hibernation_state": None,
+    }
+    _HIBERNATION_DOMAINS = {
+        "alias": "alias_rules",
+        "rule": "operational_rules",
+        "term": "terms",
     }
 
     def commit(
@@ -818,6 +867,7 @@ class RhemStore:
         distillation_plan: Optional[Dict[str, Any]] = None,
         induction_plan: Optional[Dict[str, Any]] = None,
         damping_plan: Optional[Dict[str, Any]] = None,
+        hibernation_plan: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._validate_actions(actions)
         patch_id = f"p{self.state['next_patch_seq']:04d}"
@@ -840,6 +890,7 @@ class RhemStore:
             "distillation_plan": copy.deepcopy(distillation_plan),
             "induction_plan": copy.deepcopy(induction_plan),
             "damping_plan": copy.deepcopy(damping_plan),
+            "hibernation_plan": copy.deepcopy(hibernation_plan),
             "actions": copy.deepcopy(actions),
             "before": before,
             "after": after,
@@ -855,6 +906,7 @@ class RhemStore:
             "distillation_plan": copy.deepcopy(distillation_plan),
             "induction_plan": copy.deepcopy(induction_plan),
             "damping_plan": copy.deepcopy(damping_plan),
+            "hibernation_plan": copy.deepcopy(hibernation_plan),
         }
         self._save()
         self._log("patch_applied", {
@@ -870,7 +922,10 @@ class RhemStore:
         protected = set(self.guardrails.get("protected_domains", []))
         for action in actions:
             op = action.get("op")
-            domain = self._ACTION_DOMAINS.get(op)
+            if op == "set_hibernation_state":
+                domain = self._HIBERNATION_DOMAINS.get(action.get("domain"))
+            else:
+                domain = self._ACTION_DOMAINS.get(op)
             if domain is None:
                 raise GuardrailViolation(f"unknown patch action: {op}")
             if domain in protected or domain not in editable:
@@ -912,6 +967,8 @@ class RhemStore:
             self._apply_set_damping_control(action, patch_id)
         elif op == "clear_damping_control":
             self._apply_clear_damping_control(action)
+        elif op == "set_hibernation_state":
+            self._apply_set_hibernation_state(action, patch_id)
         else:
             raise GuardrailViolation(f"unsupported op: {op}")
 
@@ -927,6 +984,7 @@ class RhemStore:
                 "created_at": created_at,
                 "patch_id": None,
                 "distillation": _default_distillation(created_at),
+                "hibernation": _default_hibernation(created_at),
             }
             self.state["alias_rules"][canonical] = rule
             action["created"] = True
@@ -935,6 +993,10 @@ class RhemStore:
         rule.setdefault(
             "distillation",
             _default_distillation(rule.get("created_at")),
+        )
+        rule.setdefault(
+            "hibernation",
+            _default_hibernation(rule.get("created_at")),
         )
         for field in ("family", "category", "structure_key"):
             if action.get(field) and not rule.get(field):
@@ -961,6 +1023,13 @@ class RhemStore:
                 "distillation",
                 _default_distillation(rule.get("created_at")),
             )
+        if before and "hibernation" in before and "hibernation" not in rule:
+            rule["hibernation"] = copy.deepcopy(before["hibernation"])
+        else:
+            rule.setdefault(
+                "hibernation",
+                _default_hibernation(rule.get("created_at")),
+            )
         action["before"] = copy.deepcopy(before)
         action["after"] = rule
         self.state["operational_rules"][rule_id] = rule
@@ -981,6 +1050,13 @@ class RhemStore:
             record.setdefault(
                 "distillation",
                 _default_distillation(record.get("created_at")),
+            )
+        if before and "hibernation" in before and "hibernation" not in record:
+            record["hibernation"] = copy.deepcopy(before["hibernation"])
+        else:
+            record.setdefault(
+                "hibernation",
+                _default_hibernation(record.get("created_at")),
             )
         action["before"] = copy.deepcopy(before)
         record["patch_id"] = patch_id
@@ -1110,6 +1186,74 @@ class RhemStore:
         action["before"] = before
         action["after"] = None
 
+    def _apply_set_hibernation_state(
+        self,
+        action: Dict[str, Any],
+        patch_id: str,
+    ) -> None:
+        domain = action["domain"]
+        collection = self._HIBERNATION_DOMAINS.get(domain)
+        if collection is None:
+            raise GuardrailViolation(
+                f"unsupported hibernation domain: {domain}"
+            )
+        key = action["key"]
+        record = self.state[collection].get(key)
+        if record is None:
+            raise NotFound(f"hibernation record not found: {domain}:{key}")
+        action["before"] = copy.deepcopy(record)
+        status = action["status"]
+        if status not in {"active", "observing", "hibernating"}:
+            raise GuardrailViolation(f"unsupported hibernation status: {status}")
+        evaluated_at = action.get("evaluated_at") or utc_now()
+        hibernation = copy.deepcopy(
+            record.get("hibernation") or _default_hibernation(
+                record.get("created_at")
+            )
+        )
+        history = list(hibernation.get("history") or [])
+        history.append({
+            "at": evaluated_at,
+            "status": status,
+            "reason": action.get("reason"),
+            "patch_id": patch_id,
+        })
+        hibernation.update({
+            "status": status,
+            "reason": action.get("reason"),
+            "entered_at": evaluated_at,
+            "last_transition_at": evaluated_at,
+            "patch_id": patch_id,
+            "history": history[-20:],
+        })
+        if status == "observing":
+            hibernation["observation_started_at"] = evaluated_at
+        elif status == "hibernating":
+            hibernation["hibernated_at"] = evaluated_at
+        elif status == "active":
+            hibernation["last_wake_at"] = evaluated_at
+            hibernation["observation_started_at"] = None
+            hibernation["hibernated_at"] = None
+        record["hibernation"] = hibernation
+        if domain == "rule":
+            previous = action.get("before") or {}
+            previous_lifecycle = (
+                (previous.get("hibernation") or {}).get("status")
+            )
+            if status == "hibernating":
+                enabled_before_hibernation = bool(previous.get("enabled", False))
+                hibernation["enabled_before_hibernation"] = (
+                    enabled_before_hibernation
+                )
+                hibernation["disabled_by_hibernation"] = (
+                    enabled_before_hibernation
+                )
+                record["enabled"] = False
+            elif status == "active" and previous_lifecycle == "hibernating":
+                if hibernation.get("disabled_by_hibernation"):
+                    record["enabled"] = True
+        action["after"] = copy.deepcopy(record)
+
     def rollback(self, patch_id: str) -> Dict[str, Any]:
         meta = self.state["patch_meta"].get(patch_id)
         if not meta or not self._patch_path(patch_id).exists():
@@ -1227,6 +1371,19 @@ class RhemStore:
             )
             if before is not None:
                 controls[key] = copy.deepcopy(before)
+        elif op == "set_hibernation_state":
+            domain = action["domain"]
+            collection = self._HIBERNATION_DOMAINS.get(domain)
+            if collection is None:
+                raise GuardrailViolation(
+                    f"unsupported hibernation domain: {domain}"
+                )
+            key = action["key"]
+            before = action.get("before")
+            if before is None:
+                self.state[collection].pop(key, None)
+            else:
+                self.state[collection][key] = copy.deepcopy(before)
         else:
             raise GuardrailViolation(f"cannot undo op: {op}")
 

@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .distillation import HardExampleDistiller
 from .damping import DampingSuppressor
 from .graph import GraphAnalyzer, GraphFinding
+from .hibernation import HibernationManager
 from .induction import DistillateInducer
 from .models import (
     ErrorCategory,
@@ -317,6 +318,7 @@ class LearningEngine:
         distiller: Optional[HardExampleDistiller] = None,
         inducer: Optional[DistillateInducer] = None,
         damping: Optional[DampingSuppressor] = None,
+        hibernation: Optional[HibernationManager] = None,
     ) -> None:
         self.store = store
         self.gate = gate or GatePolicy()
@@ -325,11 +327,32 @@ class LearningEngine:
         self.distiller = distiller
         self.inducer = inducer
         self.damping = damping
+        self.hibernation = hibernation
 
     # ----------------------------------------------------------
     # 主入口：现场错误/用户纠错 → 待学习区 → 门控
     # ----------------------------------------------------------
     def ingest(self, incident: Incident) -> Dict[str, Any]:
+        hibernation_wake = None
+        if self.hibernation is not None:
+            wake_plan = self.hibernation.plan_wake(
+                self.store.list_distillation_records(),
+                incident,
+                now=incident.occurred_at,
+            )
+            if wake_plan["actions"]:
+                wake_patch = self.store.commit(
+                    actions=copy.deepcopy(wake_plan["actions"]),
+                    summary=(
+                        "冬眠复发唤醒："
+                        f"{incident.family}"
+                    ),
+                    actor="rhem:hibernation",
+                    incident_ids=[incident.id],
+                    hibernation_plan=copy.deepcopy(wake_plan),
+                )
+                wake_plan["patch_id"] = wake_patch["id"]
+                hibernation_wake = wake_plan
         finding = self.graph_analyzer.analyze(incident)
         graph_finding = finding.to_dict() if finding else None
         cluster_key = None
@@ -377,6 +400,7 @@ class LearningEngine:
             "gate_decision": gate_decision,
             "distillation_decision": distillation_decision,
             "damping_decision": None,
+            "hibernation_wake": hibernation_wake,
             "event": "waiting",
             "message": (
                 f"已进入待学习区；同族累计 {group['occurrences']} 次，"
@@ -790,6 +814,102 @@ class LearningEngine:
         return plan
 
     # ----------------------------------------------------------
+    # 冬眠：观察、低功耗待命、唤醒与人工回收
+    # ----------------------------------------------------------
+    def hibernate(
+        self,
+        *,
+        apply: bool = False,
+        now: Optional[str] = None,
+        actor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """生成生命周期计划；显式 apply 时才生成观察/冬眠补丁。"""
+
+        manager = self.hibernation or HibernationManager()
+        plan = manager.plan_library(
+            self.store.list_distillation_records(),
+            now=now,
+        )
+        self.store.log_hibernation_plan(plan)
+        plan["applied"] = False
+        plan["patch_id"] = None
+        if not apply:
+            return plan
+        if not actor:
+            raise ValueError("hibernate(apply=True) requires actor")
+        if not plan["actions"]:
+            plan["applied"] = True
+            return plan
+
+        counts = plan.get("summary") or {}
+        patch = self.store.commit(
+            actions=copy.deepcopy(plan["actions"]),
+            summary=(
+                "冬眠生命周期治理："
+                f"observe={counts.get('observe', 0)}, "
+                f"hibernate={counts.get('hibernate', 0)}, "
+                f"recycle_candidate={counts.get('recycle_candidate', 0)}"
+            ),
+            actor=actor,
+            hibernation_plan=copy.deepcopy(plan),
+        )
+        plan["applied"] = True
+        plan["patch_id"] = patch["id"]
+        return plan
+
+    def wake_hibernated(
+        self,
+        domain: str,
+        key: str,
+        *,
+        reason: str,
+        approver: str,
+        now: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """人工唤醒一条观察期或冬眠期记录，并保留可回滚补丁。"""
+
+        manager = self.hibernation or HibernationManager()
+        plan = manager.plan_manual_wake(
+            self.store.list_distillation_records(),
+            domain=domain,
+            key=key,
+            reason=reason,
+            now=now,
+        )
+        actor = approver if approver.startswith("human:") else f"human:{approver}"
+        return self.store.commit(
+            actions=[copy.deepcopy(plan["action"])],
+            summary=f"人工唤醒冬眠记录：{domain}:{key}",
+            actor=actor,
+            hibernation_plan=copy.deepcopy(plan),
+        )
+
+    def recycle_hibernated(
+        self,
+        domain: str,
+        key: str,
+        *,
+        approver: str,
+        now: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """人工批准回收一条达到阈值的冬眠记录。"""
+
+        manager = self.hibernation or HibernationManager()
+        plan = manager.plan_recycle(
+            self.store.list_distillation_records(),
+            domain=domain,
+            key=key,
+            now=now,
+        )
+        actor = approver if approver.startswith("human:") else f"human:{approver}"
+        return self.store.commit(
+            actions=[copy.deepcopy(plan["action"])],
+            summary=f"人工批准冬眠回收：{domain}:{key}",
+            actor=actor,
+            hibernation_plan=copy.deepcopy(plan),
+        )
+
+    # ----------------------------------------------------------
     # 蒸馏反哺：候选归纳、人工批准、补丁治理
     # ----------------------------------------------------------
     def induct(
@@ -1062,9 +1182,13 @@ class LearningEngine:
             alias = evidence.get("alias") or row.get("actual")
             rule = view["alias_rules"].get(canonical)
             status = (rule.get("distillation") or {}).get("status") if rule else None
+            hibernation_status = (
+                (rule.get("hibernation") or {}).get("status") if rule else None
+            )
             return bool(
                 rule
                 and status == "active"
+                and hibernation_status != "hibernating"
                 and alias
                 and alias in rule["aliases"]
             )
@@ -1084,5 +1208,15 @@ class LearningEngine:
             term = evidence.get("term") or row["family"]
             record = view["terms"].get(term)
             status = (record.get("distillation") or {}).get("status") if record else None
-            return bool(record and status == "active" and record.get("canonical"))
+            hibernation_status = (
+                (record.get("hibernation") or {}).get("status")
+                if record
+                else None
+            )
+            return bool(
+                record
+                and status == "active"
+                and hibernation_status != "hibernating"
+                and record.get("canonical")
+            )
         return False

@@ -2,12 +2,12 @@ cff-version: 1.2.0
 message: "Cite the version DOI when available; use the concept DOI when citing the project across versions."
 type: software
 title: "RHEM - Runtime Hard-Example Mining for Agent Systems"
-version: 0.6.0
+version: 0.7.0
 date-released: 2026-09-12
 license: MIT
 repository-code: "https://github.com/rw6w2r4rgd-sys/RHEM-Runtime-Hard-Example-Mining-for-Agent-Systems"
 url: "https://github.com/rw6w2r4rgd-sys/RHEM-Runtime-Hard-Example-Mining-for-Agent-Systems"
-abstract: "Runtime hard-example mining, opt-in hard-example distillation, human-governed distillate induction, and opt-in damping suppression for Agent systems, with gating, audit trails, rollback-governed patches, stability controls, and explicit non-production validation boundaries."
+abstract: "Runtime hard-example mining, opt-in hard-example distillation, human-governed distillate induction, opt-in damping suppression, and opt-in hibernation for Agent systems, with gating, audit trails, rollback-governed patches, lifecycle controls, and explicit non-production validation boundaries."
 authors:
   - family-names: 徐
     given-names: 应生
@@ -20,11 +20,13 @@ keywords:
   - distillate induction
   - damping suppression
   - stability governance
+  - hibernation
+  - lifecycle governance
   - rollback-governed patches
 identifiers:
   - type: doi
     value: 10.5281/zenodo.22681163
-    description: "Zenodo concept DOI for the RHEM project. Use it for v0.6.0 until a version DOI is archived."
+    description: "Zenodo concept DOI for the RHEM project. Use it for v0.7.0 or v0.6.0 until their version DOIs are archived."
   - type: doi
     value: 10.5281/zenodo.22719758
     description: "Zenodo version DOI for the previous RHEM v0.5.1 release."

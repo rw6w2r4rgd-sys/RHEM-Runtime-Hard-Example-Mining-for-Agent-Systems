@@ -1,14 +1,14 @@
 {
   "title": "RHEM - Runtime Hard-Example Mining for Agent Systems",
   "upload_type": "software",
-  "description": "<p>RHEM is a runtime hard-example mining reference implementation for Agent systems. Version 0.6.0 adds an opt-in damping suppressor for dead-zone handling, A-B-A oscillation detection, regret-rate alerts, cooldown and thaw governance, and optional rule downweighting. Damping changes only the timing of automatic evolution actions and remains patch-governed and rollback-capable. This release does not claim production performance, statistical optimality, or proven generalization gains.</p>",
+  "description": "<p>RHEM is a runtime hard-example mining reference implementation for Agent systems. Version 0.7.0 adds an opt-in hibernation manager for observation, low-power hibernation, recurrence wake-up, manual wake-up, human-approved recycling, and drift-sample ledgers. Hibernation changes only record lifecycle state and remains patch-governed and rollback-capable. This release does not claim production performance, statistical optimality, or proven generalization gains.</p>",
   "creators": [
     {
       "name": "徐应生"
     }
   ],
   "publication_date": "2026-09-12",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "license": "MIT",
   "language": "zho",
   "keywords": [
@@ -21,6 +21,8 @@
     "damping suppression",
     "oscillation detection",
     "stability governance",
+    "hibernation",
+    "lifecycle governance",
     "rollback"
   ],
   "related_identifiers": [
@@ -36,5 +38,5 @@
       "resource_type": "software"
     }
   ],
-  "notes": "RHEM v0.6.0 is a repository release for opt-in damping suppression. Its independent Zenodo version DOI has not yet been generated; use the concept DOI 10.5281/zenodo.22681163 when citing this version before archival. Previous version DOIs remain available: v0.5.1 is 10.5281/zenodo.22719758, v0.5.0 is 10.5281/zenodo.22719697, and v0.4.0 is 10.5281/zenodo.22719563."
+  "notes": "RHEM v0.7.0 is a repository release for opt-in hibernation lifecycle governance. Independent Zenodo version DOIs for v0.7.0 and v0.6.0 have not yet been generated; use the concept DOI 10.5281/zenodo.22681163 when citing these versions before archival. Previous version DOIs remain available: v0.5.1 is 10.5281/zenodo.22719758, v0.5.0 is 10.5281/zenodo.22719697, and v0.4.0 is 10.5281/zenodo.22719563."
 }
