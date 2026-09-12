@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0] - 2026-09-12
+
+### Added
+
+- 可选 `DistillateInducer`，只从 `core/high` 账本生成候选；
+- 规则模板归纳：同一动作和多个条件形成可审计合并候选；
+- 结构弱点候选：按 `structure_key` 或 family 根键汇总核心记录；
+- 隐患预测候选：汇总高价值待处理难例的类别、来源和结构分布；
+- `induction_findings` 账本，以及候选创建、接受、拒绝和补丁关联字段；
+- 规则模板人工批准后通过 `upsert_rule` 补丁写入，结构和隐患候选只记录审查结论。
+
+### Changed
+
+- 别名、运行规则和词条记录可保留 `structure_key`，供后续结构归纳使用；
+- 补丁元数据增加 `induction_plan`；
+- `induction_findings` 纳入可编辑域，但候选不会绕过人工批准；
+- 包版本更新为 `0.4.0`。
+
+### Compatibility
+
+- 默认 `LearningEngine(store)` 不启用反哺，原有行为保持不变；
+- 反哺需要显式调用 `engine.induct()`；
+- 未显式传入 `DistillateInducer` 时使用默认参数，但不会在 `ingest()` 中自动运行；
+- 没有 `core/high` 证据时不生成候选。
+
 ## [0.3.0] - 2026-09-12
 
 ### Added

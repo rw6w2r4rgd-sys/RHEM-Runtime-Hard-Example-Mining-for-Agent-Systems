@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""RHEM 可离线演示：把四类难例、门控与蒸馏跑成闭环。"""
+"""RHEM 可离线演示：把四类难例、门控、蒸馏与反哺跑成闭环。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 from .distillation import HardExampleDistiller
 from .engine import AdaptiveGatePolicy, LearningEngine
+from .induction import DistillateInducer
 from .models import CATEGORY_LABELS, ErrorCategory, GuardrailViolation, Incident
 from .store import RhemStore
 
@@ -64,7 +65,7 @@ def main() -> None:
     engine = LearningEngine(store)
 
     print("=" * 74)
-    print("RHEM v0.3.0 参考实现演示：错一次，教会一类；免重训，当场生效")
+    print("RHEM v0.4.0 参考实现演示：错一次，教会一类；免重训，当场生效")
     print("=" * 74)
     print(f"持久化目录: {store.root}")
     print(f"门控: 同一图簇或同族 {engine.gate.min_occurrences} 个独立证据后进入并库判断")
@@ -371,6 +372,88 @@ def main() -> None:
         f"patch={applied['patch_id']}"
     )
     print("    -> 默认引擎未启用蒸馏；显式传入 HardExampleDistiller 才生效。")
+    print()
+
+    # ---------- 9. 蒸馏反哺试点 ----------
+    print("--- 9) 蒸馏反哺：从 core 账本归纳候选，人工批准后才生效 ---")
+    template_rules = [
+        {
+            "id": "rule_template_seed_a",
+            "name": "日期槽位检查 A",
+            "description": "日期字段为空时暂停。",
+            "condition": "slot.date is null",
+            "action": "ask_for_confirmation",
+            "family": "rule:date:checkout",
+            "structure_key": "slot:date",
+            "sources": ["checkout"],
+            "enabled": True,
+            "created_at": "2026-09-12T00:00:00Z",
+        },
+        {
+            "id": "rule_template_seed_b",
+            "name": "日期槽位检查 B",
+            "description": "日期字段没有锚点时暂停。",
+            "condition": "slot.date has no anchor",
+            "action": "ask_for_confirmation",
+            "family": "rule:date:support",
+            "structure_key": "slot:date",
+            "sources": ["support"],
+            "enabled": True,
+            "created_at": "2026-09-12T00:00:00Z",
+        },
+    ]
+    distill_store.commit(
+        actions=[
+            {"op": "upsert_rule", "rule": template_rules[0]},
+            {
+                "op": "distill_rule",
+                "rule_id": template_rules[0]["id"],
+                "quality_tier": "core",
+                "status": "active",
+                "last_evaluation_reason": "demo_core",
+            },
+            {"op": "upsert_rule", "rule": template_rules[1]},
+            {
+                "op": "distill_rule",
+                "rule_id": template_rules[1]["id"],
+                "quality_tier": "core",
+                "status": "active",
+                "last_evaluation_reason": "demo_core",
+            },
+        ],
+        summary="演示：准备两条 core 规则",
+    )
+    induction_engine = LearningEngine(
+        distill_store,
+        distiller=HardExampleDistiller(),
+        inducer=DistillateInducer(),
+    )
+    induction_plan = induction_engine.induct(
+        now="2026-09-12T00:00:00Z"
+    )
+    template_findings = [
+        item for item in induction_plan["findings"]
+        if item["kind"] == "rule_template"
+    ]
+    if template_findings:
+        finding_id = template_findings[0]["finding_id"]
+        induction_patch = induction_engine.approve_induction(
+            finding_id,
+            approver="human:demo",
+        )
+        finding = distill_store.get_induction_finding(finding_id)
+        print(
+            "    -> 归纳候选: "
+            f"rule_template={induction_plan['summary']['rule_template']} "
+            f"structural={induction_plan['summary']['structural_weakness']} "
+            f"hazard={induction_plan['summary']['hazard_prediction']}"
+        )
+        print(
+            "    -> 人工批准后: "
+            f"status={finding['status']} patch={induction_patch['id']}；"
+            "规则模板已进入可回滚补丁。"
+        )
+    print("    -> 反哺不自动改库；结构弱点和隐患只生成人工复核账本。")
     print()
 
     print("--- 结果总览 ---")

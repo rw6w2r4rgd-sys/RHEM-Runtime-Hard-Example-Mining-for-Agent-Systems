@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .distillation import HardExampleDistiller
 from .graph import GraphAnalyzer, GraphFinding
+from .induction import DistillateInducer
 from .models import (
     ErrorCategory,
     HardExampleGroup,
@@ -265,6 +266,8 @@ class Decisioner:
             proposed = evidence.get("proposed_rule")
             if isinstance(proposed, dict):
                 rule = copy.deepcopy(proposed)
+                if evidence.get("structure_key"):
+                    rule.setdefault("structure_key", evidence["structure_key"])
                 if graph_context:
                     rule["graph_evidence"] = graph_context
                 return {"rule": rule}
@@ -283,6 +286,8 @@ class Decisioner:
                 "patch_id": None,
                 "created_at": utc_now(),
             }
+            if evidence.get("structure_key"):
+                rule["structure_key"] = evidence["structure_key"]
             if graph_context:
                 rule["graph_evidence"] = graph_context
             return {"rule": rule}
@@ -291,6 +296,8 @@ class Decisioner:
                 "term": evidence.get("term") or incident.family,
                 "required_attribution": ["canonical", "definition", "kind"],
             }
+            if evidence.get("structure_key"):
+                suggestion["structure_key"] = evidence["structure_key"]
             if graph_context:
                 suggestion["graph_evidence"] = graph_context
             return suggestion
@@ -307,12 +314,14 @@ class LearningEngine:
         decisioner: Optional[Decisioner] = None,
         graph_analyzer: Optional[GraphAnalyzer] = None,
         distiller: Optional[HardExampleDistiller] = None,
+        inducer: Optional[DistillateInducer] = None,
     ) -> None:
         self.store = store
         self.gate = gate or GatePolicy()
         self.decisioner = decisioner or Decisioner()
         self.graph_analyzer = graph_analyzer or GraphAnalyzer()
         self.distiller = distiller
+        self.inducer = inducer
 
     # ----------------------------------------------------------
     # 主入口：现场错误/用户纠错 → 待学习区 → 门控
@@ -516,6 +525,9 @@ class LearningEngine:
                 "op": "add_alias",
                 "canonical": canonical,
                 "aliases": [alias],
+                "family": incident.family,
+                "category": incident.category.value,
+                "structure_key": evidence.get("structure_key"),
                 "sources": list(gate_record["sources"]),
             }],
             summary=f"识别难例并库：{alias} -> {canonical}",
@@ -613,6 +625,8 @@ class LearningEngine:
         rule["enabled"] = True
         rule["sources"] = list(dict.fromkeys(gate_record["sources"]))
         rule["created_at"] = utc_now()
+        if incident.evidence.get("structure_key"):
+            rule["structure_key"] = incident.evidence["structure_key"]
         proposal = self.store.create_proposal(
             kind="rule_gap",
             family=incident.family,
@@ -706,6 +720,117 @@ class LearningEngine:
         return plan
 
     # ----------------------------------------------------------
+    # 蒸馏反哺：候选归纳、人工批准、补丁治理
+    # ----------------------------------------------------------
+    def induct(
+        self,
+        *,
+        now: Optional[str] = None,
+        persist: bool = True,
+    ) -> Dict[str, Any]:
+        """从 core/high 账本生成候选；不直接修改业务记忆。"""
+
+        inducer = self.inducer or DistillateInducer()
+        view = self.store.view()
+        plan = inducer.induce(
+            self.store.list_distillation_records(),
+            list(view["hard_examples"].values()),
+            now=now,
+        )
+        plan["persisted"] = persist
+        if persist:
+            for item in plan["findings"]:
+                stored = self.store.create_induction_finding(item)
+                record = stored["finding"]
+                item["finding_id"] = record["id"]
+                item["status"] = record["status"]
+                item["reused"] = not stored["created"]
+        self.store.log_induction_plan(plan)
+        return plan
+
+    def approve_induction(
+        self,
+        finding_id: str,
+        approver: str,
+    ) -> Dict[str, Any]:
+        """人工批准候选；规则模板落补丁，其余只接受审查结论。"""
+
+        finding = self.store.get_induction_finding(finding_id)
+        if finding.get("status") != "proposed":
+            raise NotFound(
+                f"induction finding is not proposed: {finding.get('status')}"
+            )
+        actor = approver if approver.startswith("human:") else f"human:{approver}"
+        actions: List[Dict[str, Any]] = []
+        final_status = "accepted"
+        if finding.get("kind") == "rule_template":
+            rule = copy.deepcopy(
+                (finding.get("suggested") or {}).get("rule") or {}
+            )
+            if not rule:
+                raise NotFound("rule-template finding has no suggested rule")
+            rule["enabled"] = True
+            actions.append({"op": "upsert_rule", "rule": rule})
+            final_status = "applied"
+        elif finding.get("kind") not in {
+            "structural_weakness",
+            "hazard_prediction",
+        }:
+            raise NotFound(f"unsupported induction kind: {finding.get('kind')}")
+
+        actions.append({
+            "op": "resolve_induction",
+            "finding_id": finding_id,
+            "status": final_status,
+            "approver": approver,
+        })
+        patch = self.store.commit(
+            actions=actions,
+            summary=f"人工批准蒸馏反哺：{finding.get('title')}",
+            actor=actor,
+            induction_plan={
+                "finding_id": finding_id,
+                "kind": finding.get("kind"),
+                "status": final_status,
+            },
+        )
+        return patch
+
+    def reject_induction(
+        self,
+        finding_id: str,
+        reason: str,
+        approver: str,
+    ) -> Dict[str, Any]:
+        """拒绝候选，并保留可回滚的人工决定记录。"""
+
+        finding = self.store.get_induction_finding(finding_id)
+        if finding.get("status") != "proposed":
+            raise NotFound(
+                f"induction finding is not proposed: {finding.get('status')}"
+            )
+        actor = approver if approver.startswith("human:") else f"human:{approver}"
+        return self.store.commit(
+            actions=[{
+                "op": "resolve_induction",
+                "finding_id": finding_id,
+                "status": "rejected",
+                "approver": approver,
+            }],
+            summary=(
+                f"人工拒绝蒸馏反哺：{finding.get('title')}；"
+                f"原因：{reason}"
+            ),
+            actor=actor,
+            induction_plan={
+                "finding_id": finding_id,
+                "kind": finding.get("kind"),
+                "status": "rejected",
+                "reason": reason,
+            },
+        )
+
+    # ----------------------------------------------------------
     # 人工批准
     # ----------------------------------------------------------'
     def approve(
@@ -743,6 +868,8 @@ class LearningEngine:
                 "patch_id": None,
                 "family": proposal["family"],
             }
+            if proposal.get("suggested", {}).get("structure_key"):
+                term_record["structure_key"] = proposal["suggested"]["structure_key"]
             actions = [{
                 "op": "add_term",
                 "term": term_record,

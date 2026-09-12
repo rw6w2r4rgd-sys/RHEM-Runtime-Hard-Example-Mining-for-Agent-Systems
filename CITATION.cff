@@ -1,13 +1,13 @@
 cff-version: 1.2.0
-message: "If you use RHEM v0.3.0, cite its version DOI; use the concept DOI when citing the project across versions."
+message: "If you use RHEM v0.4.0, cite its version DOI when available; use the concept DOI when citing the project across versions."
 type: software
 title: "RHEM - Runtime Hard-Example Mining for Agent Systems"
-version: 0.3.0
+version: 0.4.0
 date-released: 2026-09-12
 license: MIT
 repository-code: "https://github.com/rw6w2r4rgd-sys/RHEM-Runtime-Hard-Example-Mining-for-Agent-Systems"
 url: "https://github.com/rw6w2r4rgd-sys/RHEM-Runtime-Hard-Example-Mining-for-Agent-Systems"
-abstract: "Runtime hard-example mining and opt-in hard-example distillation for Agent systems, with gating, audit trails, rollback-governed patches, and explicit non-production validation boundaries."
+abstract: "Runtime hard-example mining, opt-in hard-example distillation, and human-governed distillate induction for Agent systems, with gating, audit trails, rollback-governed patches, and explicit non-production validation boundaries."
 authors:
   - family-names: 徐
     given-names: 应生
@@ -17,10 +17,8 @@ keywords:
   - runtime learning
   - adaptive gating
   - hard-example distillation
+  - distillate induction
 identifiers:
-  - type: doi
-    value: 10.5281/zenodo.22719509
-    description: "Zenodo version DOI for RHEM v0.3.0."
   - type: doi
     value: 10.5281/zenodo.22681163
     description: "Zenodo concept DOI for the RHEM project across versions."

@@ -1,7 +1,7 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](CHANGELOG.md)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22719509.svg)](https://doi.org/10.5281/zenodo.22719509)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](CHANGELOG.md)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22681163.svg)](https://doi.org/10.5281/zenodo.22681163)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
@@ -13,7 +13,7 @@ RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
 - 这里公开的是方法论、定位说明和 MIT 参考实现；
 - 不包含生产环境的防篡改、私有探针、内部部署脚本；
 - 当前没有 benchmark、线上 A/B 或生产性能数据，因此不声称加速倍数、准确率提升或行业领先；
-- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、难例蒸馏、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
+- 目前能证明的是：四类难例链路、BFS/DFS 图探针、固定/自适应门控、难例蒸馏、蒸馏反哺、人工批准、护栏、补丁、回滚和复扫，在参考实现与单元测试中可运行。
 
 ## 为什么需要 RHEM
 
@@ -181,6 +181,7 @@ RHEM 不替人猜标准答案，只上报：
         +--> 顺序回滚
         +--> 历史难例复扫
         +--> 可选库内回炼：core / downweighted / cull
+        +--> 可选反哺：core/high 归纳候选 -> 人工批准
 ```
 
 ### 门控
@@ -229,6 +230,30 @@ engine = LearningEngine(
 
 蒸馏只决定“哪些记录值得留”，不碰对错标准和护栏域。完整边界与已验证范围见 [难例蒸馏](docs/DISTILLATION.md)。
 
+### 蒸馏反哺
+
+`v0.4.0` 新增可选的 `DistillateInducer`，默认关闭。它把已经蒸馏出的高纯证据整理成人工审查候选：
+
+- 规则模板：多条 `core` 规则共享同一结构根因和动作时，生成条件合并候选；
+- 结构弱点：多条 `core` 记录集中在同一 `structure_key` 时，生成设计复核候选；
+- 隐患预测：高价值待处理难例集中在同一结构附近时，生成探针复查候选。
+
+归纳只使用质量等级、反馈账本、来源覆盖、`family` 和 `structure_key`。它不调用 LLM，不推断语义覆盖，也没有自动改写运行库。
+
+```python
+from rhem import DistillateInducer, HardExampleDistiller, LearningEngine
+
+engine = LearningEngine(
+    store,
+    distiller=HardExampleDistiller(),
+    inducer=DistillateInducer(),
+)
+
+plan = engine.induct(now="2026-09-12T00:00:00Z")
+```
+
+规则模板必须人工批准后才通过补丁写入；结构弱点和隐患预测只接受或拒绝审查结论，不会自动改设计、代码或探针。完整边界见 [蒸馏反哺](docs/INDUCTION.md)。
+
 ### 人工批准
 
 规则缺失和知识缺口不会自动补答案。
@@ -253,6 +278,7 @@ engine = LearningEngine(
 - `alias_rules`
 - `operational_rules`
 - `terms`
+- `induction_findings`
 - `process_settings`
 
 以下域被参考实现视为保护域：
@@ -286,7 +312,8 @@ py -X utf8 -m unittest discover -s tests -p "test_*.py" -v
 5. 护栏域拒绝带保护目标的运行期补丁；
 6. 最新补丁回滚后，复扫结果发生变化；
 7. 显式启用自适应门控后，快速复发将门槛从 `3` 降到 `2`，并把门控依据写入补丁；
-8. 显式启用难例蒸馏后，单来源重复会停留待定，跨来源复发可并库，多场景命中可升为 `core`。
+8. 显式启用难例蒸馏后，单来源重复会停留待定，跨来源复发可并库，多场景命中可升为 `core`；
+9. 显式启用蒸馏反哺后，从 `core` 规则归纳候选，人工批准后才写入可回滚补丁。
 
 demo 使用合成数据，例如 `order-104`、`ZL-9`，不包含真实订单、店名、坐标或客户信息。
 
@@ -298,9 +325,10 @@ rhem/
   models.py     Incident、ErrorCategory、HardExampleGroup 与异常
   graph.py      BFS/DFS 图探针、根因候选、图簇发现
   distillation.py  并库前分馏、反馈账本、库内回炼与补丁动作
-  store.py      JSON 记忆库、蒸馏账本、图簇、护栏域、补丁、回滚、审计日志
-  engine.py     图探针、固定/自适应门控、蒸馏接入、四类出口、人工批准、默认复扫
-  demo.py       四类难例、图探针、门控与蒸馏的离线演示
+  induction.py  从 core/high 账本归纳规则模板、结构弱点与隐患候选
+  store.py      JSON 记忆库、蒸馏与反哺账本、图簇、护栏域、补丁、回滚、审计日志
+  engine.py     图探针、固定/自适应门控、蒸馏与反哺接入、四类出口、人工批准、默认复扫
+  demo.py       四类难例、图探针、门控、蒸馏与反哺的离线演示
 tests/          单元测试
 ```
 
@@ -429,6 +457,7 @@ after = engine.rescan()
 - 难例蒸馏可拦截单来源低价值样本；
 - 多场景命中可升为 core，连续失败可降权，长期闲置可清除并可回滚；
 - 反馈账本可由 record_feedback 或显式 rescan(record_feedback=True) 回填；
+- 蒸馏反哺只从 core/high 账本生成候选，人工批准与拒绝均可回滚；
 - 规则缺失和知识缺口必须人工步骤；
 - 补丁带 before/after 快照；
 - 回滚保持补丁顺序约束；
@@ -441,6 +470,7 @@ after = engine.rescan()
 - 对真实生产任务能提高多少准确率；
 - 能节省多少成本或延迟；
 - 蒸馏阈值和 30/90 天周期在真实长尾上的统计最优性；
+- 蒸馏反哺对真实泛化、准确率或探针收益的提升幅度；
 - 门控阈值在长尾分布上的统计最优性；
 - LLM 置信度校准已经可靠；
 - 可在多进程、多租户或高并发环境下直接使用。
@@ -453,6 +483,7 @@ after = engine.rescan()
 - [x] 同族累计门控
 - [x] 可选自适应门控 `v0.2.0`
 - [x] 可选难例蒸馏 `v0.3.0`
+- [x] 可选蒸馏反哺 `v0.4.0`
 - [x] BFS/DFS 双阶段图探针与图簇门控
 - [x] 识别错误自动进入别名库
 - [x] 流程错误结构化修复
@@ -468,17 +499,18 @@ after = engine.rescan()
 
 ## 版本
 
-当前参考实现版本为 `v0.3.0`，日期 `2026-09-12`。本版新增可选难例蒸馏；默认仍使用固定 `3` 次门控，也不会自动启用蒸馏。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+当前参考实现版本为 `v0.4.0`，日期 `2026-09-12`。本版新增可选蒸馏反哺：从 `core/high` 账本生成人工审查候选，不自动改写运行库。默认仍使用固定 `3` 次门控，也不会自动启用蒸馏或反哺。完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 文档
 
 - [白皮书](WHITEPAPER.md)：方法、四类难例、业内对照、局限与 Roadmap
-- [版本变更](CHANGELOG.md)：`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
+- [版本变更](CHANGELOG.md)：`v0.4.0`、`v0.3.0`、`v0.2.0` 与 `v0.1.2` 的版本记录
 - [先驱与绘图师](docs/PIONEER-AND-CARTOGRAPHER.md)：RHEM 与难例发掘的先后定位
 - [适用阶段与分工](docs/APPLICABILITY-AND-STAGING.md)：前期优先使用 RHEM 的理由、边界与分工
 - [双阶段图探针](docs/GRAPH-PROBE.md)：BFS/DFS 语义、图格式、图簇门控、人工接管条件与局限
 - [自适应门控](docs/ADAPTIVE-GATING.md)：连续复发压力、2/3/5 门槛、风险锁、审计与试点边界
 - [难例蒸馏](docs/DISTILLATION.md)：并库前分馏、反馈账本、库内回炼、补丁边界与试点说明
+- [蒸馏反哺](docs/INDUCTION.md)：候选归纳、人工批准、结构复核、隐患排序与未验证边界
 
 ## 引用
 

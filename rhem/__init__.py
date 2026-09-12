@@ -9,6 +9,7 @@ from .engine import (
     GatePolicy,
     LearningEngine,
 )
+from .induction import DistillateInducer, InductionFinding
 from .graph import (
     GraphAnalyzer,
     GraphEdge,
@@ -25,6 +26,7 @@ __all__ = [
     "CATEGORY_LABELS",
     "Decisioner",
     "DistillationDecision",
+    "DistillateInducer",
     "ErrorCategory",
     "GateDecision",
     "GatePolicy",
@@ -35,9 +37,10 @@ __all__ = [
     "GraphNode",
     "Incident",
     "IncidentGraph",
+    "InductionFinding",
     "LearningEngine",
     "RhemStore",
     "TraversalPolicy",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

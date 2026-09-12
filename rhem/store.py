@@ -54,6 +54,7 @@ DEFAULT_GUARDRAILS: Dict[str, Any] = {
         "alias_rules",
         "operational_rules",
         "terms",
+        "induction_findings",
         "process_settings",
     ],
     "protected_domains": [
@@ -68,6 +69,7 @@ DEFAULT_GUARDRAILS: Dict[str, Any] = {
         "自动变更必须生成补丁、保留快照并支持回滚",
         "护栏域冻结；护栏变更只能走人工维护通道",
         "难例来源与原始证据只追加、不覆盖",
+        "蒸馏反哺候选必须人工批准；结构弱点和隐患不得自动执行",
     ],
 }
 
@@ -96,6 +98,18 @@ class RhemStore:
     def _load_guardrails(self) -> Dict[str, Any]:
         if self.guardrail_file.exists():
             data = json.loads(self.guardrail_file.read_text(encoding="utf-8"))
+            editable = list(data.get("editable_domains") or [])
+            if "induction_findings" not in editable:
+                editable.append("induction_findings")
+                data["editable_domains"] = editable
+            constraints = list(data.get("hard_constraints") or [])
+            induction_constraint = (
+                "蒸馏反哺候选必须人工批准；结构弱点和隐患不得自动执行"
+            )
+            if induction_constraint not in constraints:
+                constraints.append(induction_constraint)
+                data["hard_constraints"] = constraints
+            self._write_json(self.guardrail_file, data)
             return data
         self._write_json(self.guardrail_file, DEFAULT_GUARDRAILS)
         return copy.deepcopy(DEFAULT_GUARDRAILS)
@@ -115,6 +129,7 @@ class RhemStore:
             "hard_examples": {},
             "clusters": {},
             "prescriptions": {},
+            "induction_findings": {},
             "patch_meta": {},
         }
 
@@ -132,6 +147,7 @@ class RhemStore:
             data.setdefault("hard_examples", {})
             data.setdefault("clusters", {})
             data.setdefault("prescriptions", {})
+            data.setdefault("induction_findings", {})
             data.setdefault("patch_meta", {})
             for group in data["hard_examples"].values():
                 group.setdefault("occurrence_times", [])
@@ -219,6 +235,86 @@ class RhemStore:
                     "record": copy.deepcopy(record),
                 })
         return rows
+
+    def get_induction_finding(self, finding_id: str) -> Dict[str, Any]:
+        row = self.state["induction_findings"].get(finding_id)
+        if not row:
+            raise NotFound(f"induction finding not found: {finding_id}")
+        return copy.deepcopy(row)
+
+    def list_induction_findings(
+        self,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        rows = list(self.state["induction_findings"].values())
+        if status:
+            rows = [row for row in rows if row.get("status") == status]
+        rows.sort(key=lambda row: (
+            -int(row.get("priority_score", 0)),
+            row.get("kind", ""),
+            row.get("key", ""),
+        ))
+        return copy.deepcopy(rows)
+
+    def create_induction_finding(
+        self,
+        finding: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """保存或复用一条待人工处理的归纳候选。"""
+
+        fingerprint = str(finding.get("key") or "").strip()
+        if not fingerprint:
+            raise ValueError("induction finding key must not be empty")
+        for existing in self.state["induction_findings"].values():
+            if existing.get("fingerprint") != fingerprint:
+                continue
+            if existing.get("status") == "proposed":
+                existing["updated_at"] = utc_now()
+                existing["priority_score"] = int(
+                    finding.get("priority_score", existing.get("priority_score", 0))
+                )
+                existing["detail"] = finding.get("detail", existing.get("detail"))
+                existing["evidence"] = copy.deepcopy(
+                    finding.get("evidence", existing.get("evidence"))
+                )
+                self._save()
+            return {
+                "finding": copy.deepcopy(existing),
+                "created": False,
+            }
+
+        now = utc_now()
+        finding_id = new_id("induction")
+        record = copy.deepcopy(finding)
+        record.update({
+            "id": finding_id,
+            "fingerprint": fingerprint,
+            "status": "proposed",
+            "created_at": now,
+            "updated_at": now,
+            "resolved_at": None,
+            "approver": None,
+            "patch_id": None,
+        })
+        self.state["induction_findings"][finding_id] = record
+        self._save()
+        self._log("induction_finding_created", {
+            "finding_id": finding_id,
+            "kind": record.get("kind"),
+            "key": fingerprint,
+            "priority_score": record.get("priority_score", 0),
+        })
+        return {
+            "finding": copy.deepcopy(record),
+            "created": True,
+        }
+
+    def log_induction_plan(self, plan: Dict[str, Any]) -> None:
+        self._log("induction_planned", {
+            "evaluated_at": plan.get("evaluated_at"),
+            "summary": copy.deepcopy(plan.get("summary")),
+            "finding_count": len(plan.get("findings") or []),
+        })
 
     def record_feedback(
         self,
@@ -677,6 +773,7 @@ class RhemStore:
         "distill_rule": "operational_rules",
         "distill_term": "terms",
         "delete_alias": "alias_rules",
+        "resolve_induction": "induction_findings",
     }
 
     def commit(
@@ -688,6 +785,7 @@ class RhemStore:
         incident_ids: Optional[List[str]] = None,
         gate_decision: Optional[Dict[str, Any]] = None,
         distillation_plan: Optional[Dict[str, Any]] = None,
+        induction_plan: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._validate_actions(actions)
         patch_id = f"p{self.state['next_patch_seq']:04d}"
@@ -708,6 +806,7 @@ class RhemStore:
             "incident_ids": list(incident_ids or []),
             "gate_decision": copy.deepcopy(gate_decision),
             "distillation_plan": copy.deepcopy(distillation_plan),
+            "induction_plan": copy.deepcopy(induction_plan),
             "actions": copy.deepcopy(actions),
             "before": before,
             "after": after,
@@ -721,6 +820,7 @@ class RhemStore:
             "created_at": now,
             "gate_decision": copy.deepcopy(gate_decision),
             "distillation_plan": copy.deepcopy(distillation_plan),
+            "induction_plan": copy.deepcopy(induction_plan),
         }
         self._save()
         self._log("patch_applied", {
@@ -772,6 +872,8 @@ class RhemStore:
             )
         elif op == "delete_alias":
             self._apply_delete_alias(action)
+        elif op == "resolve_induction":
+            self._apply_resolve_induction(action, patch_id)
         else:
             raise GuardrailViolation(f"unsupported op: {op}")
 
@@ -796,6 +898,9 @@ class RhemStore:
             "distillation",
             _default_distillation(rule.get("created_at")),
         )
+        for field in ("family", "category", "structure_key"):
+            if action.get(field) and not rule.get(field):
+                rule[field] = action[field]
         added = [
             alias for alias in action["aliases"]
             if alias not in rule["aliases"]
@@ -884,6 +989,23 @@ class RhemStore:
             self.state["alias_rules"].get(canonical)
         )
         self.state["alias_rules"].pop(canonical, None)
+
+    def _apply_resolve_induction(
+        self,
+        action: Dict[str, Any],
+        patch_id: str,
+    ) -> None:
+        finding_id = action["finding_id"]
+        finding = self.state["induction_findings"].get(finding_id)
+        if finding is None:
+            raise NotFound(f"induction finding not found: {finding_id}")
+        action["before"] = copy.deepcopy(finding)
+        finding["status"] = action["status"]
+        finding["approver"] = action.get("approver")
+        finding["resolved_at"] = utc_now()
+        finding["updated_at"] = finding["resolved_at"]
+        finding["patch_id"] = patch_id
+        action["after"] = copy.deepcopy(finding)
 
     def _apply_process_settings(self, action: Dict[str, Any]) -> None:
         settings = action["settings"]
@@ -986,6 +1108,13 @@ class RhemStore:
             before = action.get("before")
             if before is not None:
                 self.state["alias_rules"][canonical] = copy.deepcopy(before)
+        elif op == "resolve_induction":
+            finding_id = action["finding_id"]
+            before = action.get("before")
+            if before is None:
+                self.state["induction_findings"].pop(finding_id, None)
+            else:
+                self.state["induction_findings"][finding_id] = copy.deepcopy(before)
         else:
             raise GuardrailViolation(f"cannot undo op: {op}")
 
