@@ -1,7 +1,7 @@
 # RHEM — Runtime Hard-Example Mining for Agent Systems
 
 [![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](CHANGELOG.md)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22681163.svg)](https://doi.org/10.5281/zenodo.22681163)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22719758.svg)](https://doi.org/10.5281/zenodo.22719758)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 RHEM 是一套面向 Agent 系统的**运行期难例挖掘参考实现**。
@@ -523,11 +523,11 @@ after = engine.rescan()
 Zenodo. https://doi.org/10.5281/zenodo.22681163
 ```
 
-`v0.5.1` 的版本 DOI 将在 Zenodo 完成该 Release 的归档后生成。在此之前，引用当前版本时使用概念 DOI：
+`v0.5.1` 的版本 DOI，固定对应本次归档元数据修正版本：
 
 ```text
-徐应生. (2026). RHEM — Runtime Hard-Example Mining for Agent Systems.
-Zenodo. https://doi.org/10.5281/zenodo.22681163
+徐应生. (2026). RHEM — Runtime Hard-Example Mining for Agent Systems (v0.5.1).
+Zenodo. https://doi.org/10.5281/zenodo.22719758
 ```
 
 `v0.5.0` 的版本 DOI，固定对应白皮书完整版的首次归档：
@@ -551,7 +551,7 @@ Zenodo. https://doi.org/10.5281/zenodo.22719563
 Zenodo. https://doi.org/10.5281/zenodo.22719509
 ```
 
-引用 `v0.5.0` 时使用 `10.5281/zenodo.22719697`；引用 `v0.4.0` 时使用 `10.5281/zenodo.22719563`；引用 `v0.3.0` 时使用 `10.5281/zenodo.22719509`；引用项目所有版本时使用概念 DOI `10.5281/zenodo.22681163`。`v0.5.1` 的版本 DOI 将在 Zenodo 归档后补充。
+引用 `v0.5.1` 时使用 `10.5281/zenodo.22719758`；引用 `v0.5.0` 时使用 `10.5281/zenodo.22719697`；引用 `v0.4.0` 时使用 `10.5281/zenodo.22719563`；引用 `v0.3.0` 时使用 `10.5281/zenodo.22719509`；引用项目所有版本时使用概念 DOI `10.5281/zenodo.22681163`。
 
 首个版本 DOI，固定对应 `v2026-09-10` 的存档：
 
