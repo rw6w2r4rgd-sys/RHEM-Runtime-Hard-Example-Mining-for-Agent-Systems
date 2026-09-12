@@ -25,6 +25,11 @@
 - 蒸馏需要显式传入 `distiller=HardExampleDistiller()`；
 - `rescan()` 默认不写反馈，仍保持旧行为。
 
+### DOI
+
+- 版本 DOI：`10.5281/zenodo.22719509`；
+- 概念 DOI：`10.5281/zenodo.22681163`。
+
 ## [0.2.0] - 2026-09-12
 
 ### Added

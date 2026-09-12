@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use RHEM, cite this repository and the Zenodo concept DOI."
+message: "If you use RHEM v0.3.0, cite its version DOI; use the concept DOI when citing the project across versions."
 type: software
 title: "RHEM - Runtime Hard-Example Mining for Agent Systems"
 version: 0.3.0
@@ -19,5 +19,8 @@ keywords:
   - hard-example distillation
 identifiers:
   - type: doi
+    value: 10.5281/zenodo.22719509
+    description: "Zenodo version DOI for RHEM v0.3.0."
+  - type: doi
     value: 10.5281/zenodo.22681163
-    description: "Zenodo concept DOI for the RHEM project; the immutable version DOI is issued on release."
+    description: "Zenodo concept DOI for the RHEM project across versions."
