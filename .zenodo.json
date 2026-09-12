@@ -1,14 +1,14 @@
 {
   "title": "RHEM - Runtime Hard-Example Mining for Agent Systems",
   "upload_type": "software",
-  "description": "<p>RHEM is a runtime hard-example mining reference implementation for Agent systems. Version 0.4.0 adds opt-in distillate induction: deterministic candidates from core/high ledgers, human approval for rule templates, and rollback-governed review records for structural weaknesses and hazard predictions. It does not claim production performance, statistical optimality, or proven generalization gains.</p>",
+  "description": "<p>RHEM is a runtime hard-example mining reference implementation for Agent systems. Version 0.5.0 expands the Agent-level hard-example mining whitepaper, clarifies the boundary between runtime memory updates and model retraining, and documents the four hard-example categories, evolution loop, limitations, and verifiable first-release claims. This is a documentation-focused release and does not claim production performance, statistical optimality, or proven generalization gains.</p>",
   "creators": [
     {
       "name": "徐应生"
     }
   ],
   "publication_date": "2026-09-12",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "MIT",
   "language": "zho",
   "keywords": [
@@ -33,5 +33,5 @@
       "resource_type": "software"
     }
   ],
-  "notes": "RHEM v0.4.0 was archived by Zenodo as 10.5281/zenodo.22719563; 10.5281/zenodo.22681163 is the concept DOI for the project."
+  "notes": "RHEM v0.5.0 was archived by Zenodo as 10.5281/zenodo.22719697; v0.4.0 remains available as 10.5281/zenodo.22719563; 10.5281/zenodo.22681163 is the concept DOI for the project."
 }
